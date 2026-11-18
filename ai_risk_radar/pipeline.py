@@ -475,6 +475,8 @@ def run_final_test(
     from ai_risk_radar.splits import make_splits
     splits = make_splits(feat_set, settings)
 
+    rf_bundle = joblib.load(model_path)
+
     # For reproduction runs, strictly reject altered partition dates or execution conventions before evaluation
     if is_reproduction:
         for b_key, exp_val in expected_boundaries.items():
@@ -496,13 +498,18 @@ def run_final_test(
                 f"Execution convention mismatch: expected target_threshold={exp_target_threshold}, got {settings.target_threshold}. "
                 "Altered conventions cannot silently reuse a consumed holdout."
             )
-        if settings.random_seed != 42:
+
+        model_seed = getattr(rf_bundle.estimator, "random_state", None)
+        if model_seed is None:
+            exp_seed = int(release_data.get("random_seed", 42))
+        else:
+            exp_seed = int(model_seed)
+
+        if settings.random_seed != exp_seed:
             raise ValueError(
-                f"Execution convention mismatch: expected random_seed=42, got {settings.random_seed}. "
+                f"Execution convention mismatch: expected random_seed={exp_seed}, got {settings.random_seed}. "
                 "Altered conventions cannot silently reuse a consumed holdout."
             )
-
-    rf_bundle = joblib.load(model_path)
 
     test_frame = feat_set.frame.loc[splits.test]
     test_prices = bundle.adjusted_close.loc[splits.test]
@@ -740,6 +747,10 @@ def run_latest(
             bundle = load_snapshot(snapshot_dir)
             active_data_dir = snapshot_dir
 
+    # Reject synthetic bundle before prediction
+    if bundle.manifest.get("is_synthetic") or bundle.manifest.get("source") == "deterministic_offline_fixture":
+        raise ValueError("Synthetic cache cannot be used for latest production prediction")
+
     feat_set = build_features(bundle, settings)
     latest_frame = feat_set.frame.iloc[-1:]
     latest_risk = predict_risk(rf_bundle, latest_frame)
@@ -787,7 +798,8 @@ def run_latest(
         "release_hash": compound_release_hash,
         "cutoff_session": as_of_session.strftime("%Y-%m-%d"),
         "staleness_sessions": staleness,
-        "refresh_status": "ok",
+        "source": bundle.manifest.get("source", "yfinance"),
+        "refresh_status": "refreshed" if data_mode == "refresh" else "cached",
         "weights_growth": settings.weights_growth,
         "weights_defensive": settings.weights_defensive,
         "weights_fixed_baseline": settings.weights_fixed_baseline,

@@ -209,6 +209,17 @@ def main() -> None:
     d_view = detailed_view(report)
 
     # Warning banners
+    is_synthetic = (
+        report.payload.get("is_synthetic")
+        or report.payload.get("data_status", {}).get("is_synthetic")
+        or report.payload.get("data_status", {}).get("source") == "deterministic_offline_fixture"
+    )
+    if is_synthetic:
+        st.warning(
+            "⚠️ **Synthetic Demonstration Data:** This report was generated from a synthetic offline "
+            "fixture. It is NOT real market data and should not be used for live trading."
+        )
+
     if c_view["is_stale"]:
         st.warning(
             f"⚠️ **Market Data Stale:** Snapshot as of `{c_view['as_of_session']}` "
@@ -329,8 +340,14 @@ def main() -> None:
 
             # Add Selected Strategy row
             if metrics:
+                sel_th = alloc.get("selected_threshold")
+                strat_label = (
+                    f"Selected Strategy (Threshold {float(sel_th):.2f})"
+                    if sel_th is not None
+                    else "Selected Strategy (Fixed Baseline Fallback)"
+                )
                 rows.append({
-                    "Strategy": f"Selected Strategy (Threshold {alloc.get('selected_threshold', 0.50):.2f})",
+                    "Strategy": strat_label,
                     "Total Return": _fmt_val_pct(metrics.get("total_return")),
                     "Return Diff (pp)": "Base",
                     "CAGR": _fmt_val_pct(metrics.get("cagr")),

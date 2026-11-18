@@ -34,7 +34,7 @@ Reference AI basket: `50% SOXX + 50% XLK` (buy-and-hold through each 20-session 
 
 ## 3. Environment Setup & Clean First Use
 
-The project supports Python 3.10+ and should be run from the repository checkout root.
+The project requires Python 3.12+ (tested on Python 3.12.13) and should be run from the repository checkout root. Pinned virtual environments guarantee deterministic scikit-learn tree splitting and dependency consistency.
 
 ### Step 1: Create Virtual Environment
 
@@ -93,7 +93,7 @@ python -m ai_risk_radar research --config config.json --data-mode cache
 Evaluates the frozen release model on the 24-month holdout test partition (2024-11-18 to 2026-11-16, 500 trading sessions). Cryptographic SHA-256 release hashes and policy parameters are strictly verified before execution:
 
 - **First-Time Evaluation:** Evaluates an untouched release manifest, records holdout consumption in `release.json`, and writes `artifacts/final_test_report.json`.
-- **Reproduction Mode:** When executed on an already-evaluated release (e.g. `artifacts/release.json`), the pipeline verifies bit-exact trajectory reproduction against the historical holdout evaluation, generates `artifacts/reproduction_test_report.json`, and leaves `release.json` and `final_test_report.json` strictly immutable.
+- **Reproduction Mode:** When executed on an already-evaluated release (e.g. `artifacts/release.json`), the pipeline re-runs holdout backtest simulation and verifies that final summary metrics (`total_return`, `cagr`, `max_drawdown`, `sharpe`, `turnover`) reproduce to within $10^{-4}$ numerical tolerance against the original evaluation, generates `artifacts/reproduction_test_report.json`, and leaves `release.json` and `final_test_report.json` strictly immutable.
 
 ```bash
 python -m ai_risk_radar final-test --release artifacts/release.json
@@ -110,7 +110,7 @@ python -m ai_risk_radar latest --release artifacts/release.json --data-mode cach
 
 ## 6. Comprehensive 43-Feature Inventory
 
-The feature pipeline in `ai_risk_radar/features.py` engineers exactly **43 causal features** derived strictly from adjusted-price history available at the previous session close ($t-1$); signals execute at the next trading session's close:
+The feature pipeline in `ai_risk_radar/features.py` engineers exactly **43 causal features** derived strictly from backward-looking adjusted-price history available at the completed evaluation session close ($t$). Decisions made at session $t$ close execute with delayed realism at the *next* trading session's close ($t+1$), preventing lookahead bias:
 
 | Feature Category | Count | Feature Names / Formula | Causal Availability | Beyond Lecture Examples |
 | :--- | :---: | :--- | :---: | :--- |
@@ -239,7 +239,7 @@ This matrix maps project deliverables directly to the **Stock Markets Analytics 
 | **Data Sources** | Clean historical ingestion, exchange alignment, adjustment handling | 4 liquid ETF universe (`SOXX`, `XLK`, `SPY`, `SHY`) aligned with NYSE (`XNYS`), split/dividend adjustments, snapshot integrity verification | `ai_risk_radar/data.py`, `tests/test_data.py`, `tests/test_blind_audit_remediation.py` |
 | **Transformations & EDA** | Causal feature engineering, distributions, lookahead avoidance | 43 causal price-derived features (returns, realized volatilities, drawdowns, relative strength, correlations), non-overlapping event distribution | `ai_risk_radar/features.py`, `notebooks/research.ipynb`, `tests/test_features.py` |
 | **Modeling & Calibration** | Temporal cross-validation, baseline comparisons, calibrated probabilities | Constant baseline, Decision Tree, Random Forest with 3 expanding purged folds, Platt scaling calibrator with support guards | `ai_risk_radar/models.py`, `tests/test_models.py` |
-| **Trading Simulation** | Execution realism, transaction costs, baseline comparison, sensitivity | Delayed execution, daily drifted holding weights, exact transaction cost deduction (10 bps baseline, 5/25 bps sensitivity), comparison vs 3 benchmarks | `ai_risk_radar/simulation.py`, `ai_risk_radar/metrics.py`, `tests/test_simulation.py` |
+| **Trading Simulation** | Execution realism, transaction costs, baseline comparison, sensitivity | Delayed execution, daily drifted holding weights, exact transaction cost deduction (10 bps production baseline; configurable cost rate and sensitivity settings parsed via config), comparison vs 3 benchmarks | `ai_risk_radar/simulation.py`, `ai_risk_radar/metrics.py`, `tests/test_simulation.py` |
 | **Vectorized Reconciliation** | Distinct vectorized linear approximation and sequential reconciliation | Vectorized linear matrix approximation compared with sequential daily-drift engine as an empirical smoke check (~30–50 bps divergence depending on market drift; exact in zero-drift unit tests) | `ai_risk_radar/simulation.py:L260-390`, `notebooks/end_to_end.ipynb`, `tests/test_blind_audit_remediation.py` |
 | **Automation & Interface** | Interactive interface, scheduled automation, reproducible execution | Production-grade two-mode Streamlit dashboard (`app.py`), modular CLI commands (`latest`, `research`, `final-test`) suitable for standard OS schedulers (cron / Task Scheduler) with incremental overlapping cache ingestion (`fetch_prices`), and interactive end-to-end notebook (`notebooks/end_to_end.ipynb`) supporting clean first-use data acquisition and actionable trade schedule generation | `app.py`, `notebooks/end_to_end.ipynb`, `ai_risk_radar/data.py`, `tests/test_app.py`, `tests/test_views.py` |
 

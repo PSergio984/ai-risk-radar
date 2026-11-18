@@ -195,7 +195,13 @@ def fit_models(
     final_rf.fit(X_train, y_train)
 
     # Sigmoid calibration check and fit on calibration split
-    cal_ok, cal_reason = _check_calibration_support(y_cal, splits.calibration)
+    y_train_unique = np.unique(y_train)
+    if len(y_train_unique) < 2:
+        cal_ok = False
+        cal_reason = f"Training data has only one class ({y_train_unique[0]}); probability unavailable"
+    else:
+        cal_ok, cal_reason = _check_calibration_support(y_cal, splits.calibration)
+
     calibrator = None
     prob_status = "unavailable"
 
@@ -232,6 +238,11 @@ def predict_risk(bundle: ModelBundle, frame: pd.DataFrame) -> pd.Series:
     if isinstance(bundle.estimator, ConstantPredictor):
         p = np.full(len(frame), bundle.estimator.prevalence)
         return pd.Series(p, index=frame.index, name="risk_probability")
+
+    classes = getattr(bundle.estimator, "classes_", None)
+    if classes is not None and len(classes) == 1:
+        val = 1.0 if float(classes[0]) == 1.0 else 0.0
+        return pd.Series(val, index=frame.index, name="risk_probability")
 
     raw_proba = bundle.estimator.predict_proba(X)[:, 1]
     if bundle.calibrator is not None and bundle.metadata.get("probability_status") == "calibrated":
