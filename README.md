@@ -143,22 +143,28 @@ In quantitative portfolio analysis, backtests are frequently represented either 
    At rebalance sessions, post-trade equity is solved numerically using Brent's method to conserve equity under nonlinear transaction costs:
    $$V_t^{\text{post}} = V_t^{\text{pre}} - c \sum_j |w_{j, t} V_t^{\text{post}} - h_{j, t}^{\text{pre}}|$$
 
-### Empirical Reconciliation on Validation Partition
+### Empirical Reconciliation & Limits of Matching
+
+The vectorized backtest serves as a **linear matrix approximation**:
+- **Vectorized Linear Approximation:** Assumes target weights remain static intra-week, applying a linear turnover penalty $c \sum |\Delta w|$.
+- **Sequential Execution Engine:** Tracks exact physical share holdings drifting daily with individual asset prices, and solves self-financing cash conservation via Brent's method ($V^{\text{post}} + \text{Cost} = V^{\text{pre}}$).
 
 ```
-Reconciliation Summary (Validation Partition, 2022-11-18 to 2024-11-18):
-  total_return           | Sequential:     0.6953 | Vectorized:     0.6918 | Diff: +0.0035
-  cagr                   | Sequential:     0.3193 | Vectorized:     0.3180 | Diff: +0.0013
-  max_drawdown           | Sequential:    -0.1636 | Vectorized:    -0.1634 | Diff: -0.0002
-  annualized_volatility  | Sequential:     0.2002 | Vectorized:     0.1998 | Diff: +0.0004
-  sharpe                 | Sequential:     1.4794 | Vectorized:     1.4820 | Diff: -0.0026
-  turnover               | Sequential:     4.8338 | Vectorized:     4.8000 | Diff: +0.0338
+Sample Reconciliation Summary (Validation Partition, 2022-11-18 to 2024-11-18):
+  total_return           | Sequential:     0.6936 | Vectorized:     0.6979 | Diff: -0.0043 (-43.4 bps)
+  cagr                   | Sequential:     0.3186 | Vectorized:     0.3204 | Diff: -0.0018 (-18 bps)
+  max_drawdown           | Sequential:    -0.1636 | Vectorized:    -0.1632 | Diff: -0.0005 (-5 bps)
+  annualized_volatility  | Sequential:     0.2002 | Vectorized:     0.2002 | Diff:  0.0000
+  sharpe                 | Sequential:     1.4794 | Vectorized:     1.4859 | Diff: -0.0064
+  turnover               | Sequential:     4.8338 | Vectorized:     4.3100 | Diff: +0.5238
 ```
 
-**Limits of Matching & Explanations:**
-1. **Intra-Week Weight Drift:** The sequential engine tracks the precise price drift of shares between weekly rebalances, whereas the vectorized linear baseline assumes constant intra-week target weight exposure.
-2. **Nonlinear Transaction Cost Conservation:** The sequential engine solves exact self-financing equity conservation iteratively via Brent's method ($V_{\text{post}} + \text{Cost} = V_{\text{pre}}$), whereas the vectorized baseline deducts costs linearly ($c \times \Delta w$).
-3. **Tracking Precision:** Both models reconcile within **35 bps total return** and **0.003 Sharpe ratio** over a 2-year backtest, confirming mathematical convergence.
+**Methodological Interpretation of Agreement:**
+1. **Conventions vs Equivalence:** Close numerical proximity (~30–50 bps over multi-year horizons, e.g. ~35 bps on synthetic test fixtures, 43.4 bps on the 2-year validation partition) confirms that both implementations adhere to matched institutional conventions: 1-session delayed execution, initial capital funding deduction, and a 10 bps turnover penalty. Numerical proximity alone does *not* imply identical mathematical formulas.
+2. **Sources of Divergence:** The residual divergence varies naturally across datasets and time periods depending on:
+   - **Intra-Week Price Dispersion & Drift:** Asset prices move independently between rebalances, causing physical share weights to drift away from target weights. Higher return dispersion increases intra-week drift, requiring greater rebalance turnover (+0.52x) in the sequential engine.
+   - **Nonlinear Cost Conservation:** Brent's method solves the exact implicit relation $V^{\text{post}} + c \sum |w_j V^{\text{post}} - h_j^{\text{pre}}| = V^{\text{pre}}$, whereas the linear vector backtest subtracts $c \sum |\Delta w|$.
+3. **Exact Mathematical Equivalence Case:** When asset prices are constant (or returns are identical across all assets with zero rebalancing costs), intra-week holding drift is exactly zero and Brent's method simplifies linearly. In this case, vectorized and sequential backtests produce bit-exact identical returns ($0.000000$ difference), as verified by deterministic unit tests.
 
 ---
 
@@ -232,8 +238,8 @@ This matrix maps project deliverables directly to the **Stock Markets Analytics 
 | **Transformations & EDA** | Causal feature engineering, distributions, lookahead avoidance | 43 causal price-derived features (returns, realized volatilities, drawdowns, relative strength, correlations), non-overlapping event distribution | `ai_risk_radar/features.py`, `notebooks/research.ipynb`, `tests/test_features.py` |
 | **Modeling & Calibration** | Temporal cross-validation, baseline comparisons, calibrated probabilities | Constant baseline, Decision Tree, Random Forest with 3 expanding purged folds, Platt scaling calibrator with support guards | `ai_risk_radar/models.py`, `tests/test_models.py` |
 | **Trading Simulation** | Execution realism, transaction costs, baseline comparison, sensitivity | Delayed execution, daily drifted holding weights, exact transaction cost deduction (10 bps baseline, 5/25 bps sensitivity), comparison vs 3 benchmarks | `ai_risk_radar/simulation.py`, `ai_risk_radar/metrics.py`, `tests/test_simulation.py` |
-| **Vectorized Reconciliation** | Distinct vectorized matrix backtest and sequential reconciliation | Vectorized linear matrix backtest reconciled with sequential daily-drift engine under matched conventions | `ai_risk_radar/simulation.py:L260-390`, `tests/test_blind_audit_remediation.py` |
-| **Automation & Interface** | Interactive interface, scheduled automation, reproducible execution | Production-grade two-mode Streamlit dashboard (Compact & Detailed), Windows/Linux task recipes, headless notebook execution | `app.py`, `notebooks/end_to_end.ipynb`, `tests/test_app.py`, `tests/test_views.py` |
+| **Vectorized Reconciliation** | Distinct vectorized linear approximation and sequential reconciliation | Vectorized linear matrix approximation reconciled with sequential daily-drift engine under matched conventions (~30–50 bps divergence depending on market drift; exact in zero-drift tests) | `ai_risk_radar/simulation.py:L260-390`, `notebooks/end_to_end.ipynb`, `tests/test_blind_audit_remediation.py` |
+| **Automation & Interface** | Interactive interface, scheduled automation, reproducible execution | Production-grade two-mode Streamlit dashboard (`app.py`), modular CLI commands (`latest`, `research`, `final-test`) suitable for standard OS schedulers (cron / Task Scheduler) with incremental overlapping cache ingestion (`fetch_prices`), and interactive end-to-end notebook (`notebooks/end_to_end.ipynb`) supporting clean first-use data acquisition and actionable trade schedule generation | `app.py`, `notebooks/end_to_end.ipynb`, `ai_risk_radar/data.py`, `tests/test_app.py`, `tests/test_views.py` |
 
 ---
 

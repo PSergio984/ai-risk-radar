@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import exchange_calendars as xcals
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -264,5 +265,59 @@ def fetch_prices(
         adjusted_close=adj_close,
         volume=volume,
         sessions=expected_sessions,
+        manifest=manifest,
+    )
+
+
+def create_offline_synthetic_fixture(
+    settings: Settings,
+    start: str = "2016-01-04",
+    end: str = "2026-11-16",
+    random_seed: int = 42,
+) -> DataBundle:
+    """Generate a deterministic synthetic DataBundle for offline testing and pipeline demonstration.
+
+    Explicitly labeled as synthetic in its manifest. Never silently treated as real market prices.
+    Generates enough sessions (>= 4 years) to satisfy train/calibration/validation/test split constraints.
+    """
+    cal = xcals.get_calendar("XNYS")
+    sessions = cal.sessions_in_range(start, end)
+    n = len(sessions)
+    if n < 1460:
+        raise ValueError(f"Synthetic fixture requires at least 1460 trading sessions, got {n}")
+
+    rng = np.random.RandomState(random_seed)
+    tickers = list(settings.tickers)
+    drift = {
+        "SOXX": 0.012,
+        "XLK": 0.010,
+        "SPY": 0.006,
+        "SHY": 0.001,
+    }
+
+    data = {}
+    for t in tickers:
+        d = drift.get(t, 0.005)
+        ret = rng.randn(n) * d
+        data[t] = 100.0 * np.exp(np.cumsum(ret))
+
+    adj_df = pd.DataFrame(data, index=sessions)
+    vol_df = pd.DataFrame(10000.0, index=sessions, columns=tickers)
+
+    manifest = {
+        "source": "deterministic_offline_fixture",
+        "tickers": tickers,
+        "acquisition_start": start,
+        "cutoff_session": sessions[-1].strftime("%Y-%m-%d"),
+        "session_count": n,
+        "is_synthetic": True,
+        "disclaimer": "Synthetic fixture for pipeline demonstration and offline testing. NOT real market data.",
+    }
+
+    validate_sessions_and_prices(adj_df, vol_df, expected_sessions=sessions)
+    return DataBundle(
+        adjusted_close=adj_df,
+        volume=vol_df,
+        sessions=sessions,
         manifest=manifest,
     )
