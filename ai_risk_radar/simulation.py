@@ -257,3 +257,155 @@ def select_strategy(
     # Sort by: smallest abs(max_drawdown), highest CAGR (-cagr), lowest turnover
     qualifying.sort()
     return qualifying[0][3]
+
+
+def vectorized_linear_backtest(
+    prices: pd.DataFrame,
+    targets: pd.DataFrame,
+    settings: Settings,
+    cost_rate: float,
+) -> BacktestResult:
+    """Vectorized matrix baseline backtest using matrix arithmetic and linear transaction costs.
+
+    Matches core delayed execution conventions:
+    - Signals executed on next trading session close
+    - Linear transaction costs proportional to weight turnover
+    - Initial cash funding cost: initial_capital * cost_rate / (1 + cost_rate)
+    """
+    sessions = prices.index
+    tickers = list(settings.tickers)
+
+    # 1. Forward-fill target weights across all sessions
+    w_df = targets[tickers].reindex(sessions).ffill()
+    if w_df.empty:
+        empty_daily = pd.DataFrame(index=sessions)
+        return BacktestResult(
+            daily=empty_daily,
+            trades=pd.DataFrame(),
+            metrics=compute_metrics(
+                empty_daily,
+                pd.DataFrame(),
+                settings.initial_capital,
+            ),
+        )
+    if w_df.iloc[0].isna().all():
+        w_df.iloc[0] = list(settings.weights_growth)
+        w_df = w_df.ffill()
+
+    # 2. Daily asset returns
+    returns_df = prices[tickers].pct_change().fillna(0.0)
+
+    # 3. Vectorized gross portfolio return: lag weights by 1 session for delayed execution
+    lagged_w = w_df.shift(1)
+    lagged_w.iloc[0] = w_df.iloc[0]
+    gross_rets = (lagged_w * returns_df).sum(axis=1)
+
+    # 4. Vectorized rebalance turnover & transaction costs
+    delta_w = (w_df - lagged_w).abs().sum(axis=1)
+    delta_w.iloc[0] = 1.0  # Initial funding turnover
+    cost_fraction = cost_rate * delta_w
+    net_rets = gross_rets - cost_fraction
+
+    # 5. Compounded equity curve starting with initial capital
+    init_cap = float(settings.initial_capital)
+    if cost_rate > 0.0:
+        v0_funded = init_cap / (1.0 + cost_rate)
+        fund_cost = init_cap - v0_funded
+    else:
+        v0_funded = init_cap
+        fund_cost = 0.0
+
+    # The initial equity change from cash funding is exactly -fund_cost / init_cap
+    if len(net_rets) > 0:
+        net_rets.iloc[0] = -fund_cost / init_cap if init_cap > 0 else 0.0
+
+    equity_factors = (1.0 + net_rets.iloc[1:]).cumprod()
+    equity_series = pd.Series(index=sessions, dtype=float)
+    equity_series.iloc[0] = v0_funded
+    if len(sessions) > 1:
+        equity_series.iloc[1:] = v0_funded * equity_factors
+
+    costs_series = pd.Series(0.0, index=sessions, dtype=float)
+    costs_series.iloc[0] = fund_cost
+    if len(sessions) > 1:
+        prev_eq = equity_series.shift(1).iloc[1:]
+        costs_series.iloc[1:] = prev_eq * cost_fraction.iloc[1:]
+
+    daily_dict = {
+        "equity": equity_series.values,
+        "gross_return": gross_rets.values,
+        "net_return": net_rets.values,
+        "cost": costs_series.values,
+    }
+    for j, ticker in enumerate(tickers):
+        daily_dict[f"holding_{ticker}"] = equity_series.values * w_df[ticker].values
+
+    daily_df = pd.DataFrame(daily_dict, index=sessions)
+
+    # Extract trades
+    trade_sessions = delta_w[delta_w > 1e-6].index
+    trade_records = []
+    for dt in trade_sessions:
+        eq_post = float(daily_df.loc[dt, "equity"])
+        c = float(daily_df.loc[dt, "cost"])
+        to = float(delta_w.loc[dt])
+        trade_records.append({
+            "exec_date": dt,
+            "v_pre": eq_post + c,
+            "v_post": eq_post,
+            "cost": c,
+            "turnover": to,
+        })
+    trades_df = pd.DataFrame(trade_records)
+
+    metrics = compute_metrics(daily_df, trades_df, settings.initial_capital)
+    return BacktestResult(daily=daily_df, trades=trades_df, metrics=metrics)
+
+
+def reconcile_vectorized_and_sequential(
+    prices: pd.DataFrame,
+    targets: pd.DataFrame,
+    settings: Settings,
+    cost_rate: float,
+) -> dict[str, object]:
+    """Reconcile the sequential daily-drifted execution engine against the vectorized matrix baseline."""
+    seq_res = simulate(prices, targets, settings, cost_rate=cost_rate)
+    vec_res = vectorized_linear_backtest(prices, targets, settings, cost_rate=cost_rate)
+
+    metric_keys = [
+        "total_return",
+        "cagr",
+        "max_drawdown",
+        "annualized_volatility",
+        "sharpe",
+        "turnover",
+        "defensive_occupancy",
+        "total_cost",
+    ]
+
+    reconciliation_table = {}
+    for k in metric_keys:
+        s_val = seq_res.metrics.get(k)
+        v_val = vec_res.metrics.get(k)
+        diff = (s_val - v_val) if (s_val is not None and v_val is not None) else None
+        reconciliation_table[k] = {
+            "sequential": s_val,
+            "vectorized": v_val,
+            "difference": diff,
+            "absolute_diff": abs(diff) if diff is not None else None,
+        }
+
+    return {
+        "sequential_metrics": seq_res.metrics,
+        "vectorized_metrics": vec_res.metrics,
+        "comparison_table": reconciliation_table,
+        "explanation": (
+            "The vectorized backtest is a linear matrix approximation: it assumes static target weights "
+            "intra-week and subtracts a first-order turnover penalty (r_t = sum w_{t-1} R_t - c sum |Delta w_t|). "
+            "The sequential execution engine tracks exact physical share value drift between rebalance dates and "
+            "solves nonlinear self-financing cash conservation via Brent's method (V_post + Cost = V_pre). "
+            "This numerical comparison serves as an empirical smoke check for the supplied dataset. Numerical "
+            "proximity does not prove equivalent execution or fee mechanics, as divergence varies naturally "
+            "with return dispersion and rebalance frequency across datasets."
+        ),
+    }

@@ -32,7 +32,11 @@ def _compute_sha256(file_path: Path) -> str:
     return h.hexdigest()
 
 
-def _compute_policy_hash(selected_threshold: float | None, settings: Settings) -> str:
+def _compute_policy_hash(
+    selected_threshold: float | None,
+    settings: Settings,
+    legacy: bool = False,
+) -> str:
     """Compute deterministic SHA256 of release policy and allocation rules."""
     policy_payload = {
         "selected_threshold": float(selected_threshold) if selected_threshold is not None else None,
@@ -42,6 +46,9 @@ def _compute_policy_hash(selected_threshold: float | None, settings: Settings) -
         "cost_rate": float(settings.cost_rate),
         "tickers": list(settings.tickers),
     }
+    if not legacy:
+        policy_payload["target_horizon"] = int(settings.target_horizon)
+        policy_payload["target_threshold"] = float(settings.target_threshold)
     return hashlib.sha256(json.dumps(policy_payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -90,6 +97,11 @@ def run_research(settings: Settings, data_mode: str = "cache") -> Path:
         bundle = load_snapshot(snapshot_dir)
     else:
         raise ValueError(f"Invalid data_mode: '{data_mode}'. Must be 'refresh' or 'cache'.")
+
+    if bundle.manifest.get("is_synthetic") and not getattr(settings, "allow_synthetic", False):
+        raise ValueError(
+            "Production guard violation: synthetic data cannot be used for research release without explicit allow_synthetic=True."
+        )
 
     # 2. Features and Splits
     feat_set = build_features(bundle, settings)
@@ -183,6 +195,8 @@ def run_research(settings: Settings, data_mode: str = "cache") -> Path:
         "fallback_reason": rf_bundle.metadata.get("reason"),
         "boundaries": splits.boundaries,
         "validation_metrics": selected_res.metrics,
+        "target_horizon": int(settings.target_horizon),
+        "target_threshold": float(settings.target_threshold),
     }
     if previous_consumption is not None:
         release_payload["previous_holdout_consumption"] = previous_consumption
@@ -215,6 +229,8 @@ def run_research(settings: Settings, data_mode: str = "cache") -> Path:
         "weights_defensive": settings.weights_defensive,
         "weights_fixed_baseline": settings.weights_fixed_baseline,
         "tickers": settings.tickers,
+        "target_horizon": settings.target_horizon,
+        "target_threshold": settings.target_threshold,
     }
 
     report = build_report(all_results, val_risk, metadata)
@@ -362,15 +378,39 @@ def run_final_test(
 
     settings, _project_dir = _resolve_pipeline_settings(rel_path, config_path=config_path, settings=settings)
 
+    # For reproduction runs, strictly reject altered execution conventions before simulation
+    if is_reproduction:
+        exp_horizon = release_data.get("target_horizon", 20)
+        if settings.target_horizon != exp_horizon:
+            raise ValueError(
+                f"Execution convention mismatch: expected target_horizon={exp_horizon}, got {settings.target_horizon}. "
+                "Altered conventions cannot silently reuse a consumed holdout."
+            )
+        exp_threshold = release_data.get("target_threshold", -0.05)
+        if abs(settings.target_threshold - exp_threshold) > 1e-6:
+            raise ValueError(
+                f"Execution convention mismatch: expected target_threshold={exp_threshold}, got {settings.target_threshold}. "
+                "Altered conventions cannot silently reuse a consumed holdout."
+            )
+
     # Validate policy hash or source-backed historical provenance BEFORE snapshot loading / simulation
     selected_threshold = release_data.get("selected_threshold")
     actual_policy_hash = _compute_policy_hash(selected_threshold, settings)
 
     if expected_policy_hash and actual_policy_hash != expected_policy_hash:
-        raise ValueError(
-            f"Policy / configuration mismatch on release: expected policy hash {expected_policy_hash}, "
-            f"got {actual_policy_hash}. Config/policy changes cannot silently reuse a consumed holdout as untouched."
-        )
+        # Check backward compatibility with legacy policy hash (omitting target horizon & threshold)
+        legacy_policy_hash = _compute_policy_hash(selected_threshold, settings, legacy=True)
+        if legacy_policy_hash == expected_policy_hash and (
+            legacy_provenance is not None or (
+                settings.target_horizon == 20 and abs(settings.target_threshold - (-0.05)) < 1e-6
+            )
+        ):
+            actual_policy_hash = legacy_policy_hash
+        else:
+            raise ValueError(
+                f"Policy / configuration mismatch on release: expected policy hash {expected_policy_hash}, "
+                f"got {actual_policy_hash}. Config/policy changes cannot silently reuse a consumed holdout as untouched."
+            )
 
     # For legacy releases with source-backed provenance, verify explicit parameters before simulation
     if legacy_provenance is not None:
@@ -409,6 +449,10 @@ def run_final_test(
     # Load cached snapshot
     snapshot_dir = Path(settings.raw_dir) / "snapshot"
     bundle = load_snapshot(snapshot_dir)
+    if bundle.manifest.get("is_synthetic") and not getattr(settings, "allow_synthetic", False):
+        raise ValueError(
+            "Production guard violation: synthetic data cannot be used for final holdout test evaluation."
+        )
 
     # Validate data manifest hash against release data hash if tracked
     actual_data_hash = "unknown"
@@ -440,14 +484,16 @@ def run_final_test(
                     f"Partition boundary mismatch on reproduction: expected {b_key}={exp_val}, got {act_val}. "
                     "Altered partition dates cannot silently reuse a consumed holdout."
                 )
-        if settings.target_horizon != 20:
+        exp_target_horizon = int(release_data.get("target_horizon", 20))
+        exp_target_threshold = float(release_data.get("target_threshold", -0.05))
+        if settings.target_horizon != exp_target_horizon:
             raise ValueError(
-                f"Execution convention mismatch: expected target_horizon=20, got {settings.target_horizon}. "
+                f"Execution convention mismatch: expected target_horizon={exp_target_horizon}, got {settings.target_horizon}. "
                 "Altered conventions cannot silently reuse a consumed holdout."
             )
-        if abs(settings.target_threshold - (-0.05)) > 1e-6:
+        if abs(settings.target_threshold - exp_target_threshold) > 1e-6:
             raise ValueError(
-                f"Execution convention mismatch: expected target_threshold=-0.05, got {settings.target_threshold}. "
+                f"Execution convention mismatch: expected target_threshold={exp_target_threshold}, got {settings.target_threshold}. "
                 "Altered conventions cannot silently reuse a consumed holdout."
             )
         if settings.random_seed != 42:
@@ -496,13 +542,14 @@ def run_final_test(
         if strat_key in candidates:
             selected_res = candidates[strat_key]
         else:
+            targets = weekly_targets(test_risk, splits.test, settings, threshold=selected_threshold)
             selected_res = simulate(
                 test_prices,
-                test_risk,
-                selected_threshold,
+                targets,
                 settings,
                 cost_rate=settings.cost_rate,
             )
+            candidates[strat_key] = selected_res
     else:
         selected_res = base_res
 
@@ -594,6 +641,8 @@ def run_final_test(
             "weights_defensive": settings.weights_defensive,
             "weights_fixed_baseline": settings.weights_fixed_baseline,
             "tickers": settings.tickers,
+            "target_horizon": settings.target_horizon,
+            "target_threshold": settings.target_threshold,
             "original_evaluated_at": release_data["test_evaluation"].get("evaluated_at"),
             "metric_convention": metric_convention,
             "net_initial_capital_total_return": net_initial_capital_ret,
@@ -623,6 +672,8 @@ def run_final_test(
         "weights_defensive": settings.weights_defensive,
         "weights_fixed_baseline": settings.weights_fixed_baseline,
         "tickers": settings.tickers,
+        "target_horizon": settings.target_horizon,
+        "target_threshold": settings.target_threshold,
         "metric_convention": "net_initial_capital",
         "net_initial_capital_total_return": net_initial_capital_ret,
         "legacy_post_funding_total_return": legacy_post_funding_ret,
@@ -669,12 +720,25 @@ def run_latest(
     rf_bundle = joblib.load(model_path)
     settings, _project_dir = _resolve_pipeline_settings(rel_path, config_path=config_path, settings=settings)
     snapshot_dir = Path(settings.raw_dir) / "snapshot"
+    latest_dir = Path(settings.raw_dir) / "latest"
 
     if data_mode == "refresh":
-        bundle = fetch_prices(settings)
-        save_snapshot(bundle, snapshot_dir)
+        latest_dir.mkdir(parents=True, exist_ok=True)
+        existing_bundle = None
+        if (latest_dir / "manifest.json").is_file():
+            existing_bundle = load_snapshot(latest_dir)
+        elif (snapshot_dir / "manifest.json").is_file():
+            existing_bundle = load_snapshot(snapshot_dir)
+        bundle = fetch_prices(settings, existing_bundle=existing_bundle)
+        save_snapshot(bundle, latest_dir)
+        active_data_dir = latest_dir
     else:
-        bundle = load_snapshot(snapshot_dir)
+        if (latest_dir / "manifest.json").is_file():
+            bundle = load_snapshot(latest_dir)
+            active_data_dir = latest_dir
+        else:
+            bundle = load_snapshot(snapshot_dir)
+            active_data_dir = snapshot_dir
 
     feat_set = build_features(bundle, settings)
     latest_frame = feat_set.frame.iloc[-1:]
@@ -688,20 +752,31 @@ def run_latest(
     actual_policy_hash = _compute_policy_hash(selected_threshold, settings)
     expected_policy_hash = release_data.get("hashes", {}).get("policy")
     if expected_policy_hash and actual_policy_hash != expected_policy_hash:
-        raise ValueError(
-            f"Policy / configuration mismatch on release: expected policy hash {expected_policy_hash}, "
-            f"got {actual_policy_hash}."
-        )
+        legacy_policy_hash = _compute_policy_hash(selected_threshold, settings, legacy=True)
+        if legacy_policy_hash == expected_policy_hash and (
+            settings.target_horizon == 20 and abs(settings.target_threshold - (-0.05)) < 1e-6
+        ):
+            actual_policy_hash = legacy_policy_hash
+        else:
+            raise ValueError(
+                f"Policy / configuration mismatch on release: expected policy hash {expected_policy_hash}, "
+                f"got {actual_policy_hash}."
+            )
     actual_data_hash = "unknown"
-    data_manifest_path = snapshot_dir / "manifest.json"
+    data_manifest_path = active_data_dir / "manifest.json"
     if data_manifest_path.is_file():
         actual_data_hash = _compute_sha256(data_manifest_path)
 
-    compound_release_hash = (
-        release_data.get("hashes", {}).get("release")
-        or release_data.get("release_hash")
-        or _compute_release_hash(actual_model_hash, actual_data_hash, actual_policy_hash)
-    )
+    if active_data_dir.name == "latest":
+        compound_release_hash = _compute_release_hash(
+            actual_model_hash, actual_data_hash, actual_policy_hash
+        )
+    else:
+        compound_release_hash = (
+            release_data.get("hashes", {}).get("release")
+            or release_data.get("release_hash")
+            or _compute_release_hash(actual_model_hash, actual_data_hash, actual_policy_hash)
+        )
 
     metadata = {
         "pipeline_mode": "latest",
@@ -717,6 +792,8 @@ def run_latest(
         "weights_defensive": settings.weights_defensive,
         "weights_fixed_baseline": settings.weights_fixed_baseline,
         "tickers": settings.tickers,
+        "target_horizon": settings.target_horizon,
+        "target_threshold": settings.target_threshold,
     }
 
     report = build_report({}, latest_risk, metadata)

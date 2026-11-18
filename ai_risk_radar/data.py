@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import exchange_calendars as xcals
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -136,31 +137,75 @@ def load_snapshot(path: Path | str) -> DataBundle:
     )
 
 
-def fetch_prices(settings: Settings, as_of: pd.Timestamp | None = None) -> DataBundle:
-    """Fetch ETF prices from yfinance and align with XNYS exchange calendar."""
-    cal = xcals.get_calendar("XNYS")
+def resolve_last_completed_session(
+    cal: xcals.ExchangeCalendar,
+    as_of: pd.Timestamp | str | None = None,
+) -> pd.Timestamp:
+    """Resolve last completed trading session on XNYS calendar for any date or timestamp."""
     if as_of is None:
         now_ny = pd.Timestamp.now(tz="UTC").tz_convert("America/New_York")
         today_date = pd.Timestamp(now_ny.date())
-        if now_ny.hour >= 16 and cal.is_session(today_date):
-            last_completed = today_date
-        else:
-            last_completed = cal.previous_session(today_date)
-    else:
-        as_of_ts = pd.Timestamp(as_of)
-        if as_of_ts.tz is not None:
-            as_of_ts = as_of_ts.tz_convert("America/New_York").tz_localize(None)
-        as_of_date = pd.Timestamp(as_of_ts.date())
-        if cal.is_session(as_of_date):
-            last_completed = as_of_date
-        else:
-            last_completed = cal.previous_session(as_of_date)
+        if cal.is_session(today_date):
+            market_close = cal.session_close(today_date).tz_convert("America/New_York")
+            if now_ny >= market_close:
+                return today_date
+            return pd.Timestamp(cal.previous_session(today_date))
+        return pd.Timestamp(cal.date_to_session(today_date, direction="previous"))
+
+    as_of_ts = pd.Timestamp(as_of)
+    if as_of_ts.tz is not None:
+        as_of_ts = as_of_ts.tz_convert("America/New_York").tz_localize(None)
+    as_of_date = pd.Timestamp(as_of_ts.date())
+    if cal.is_session(as_of_date):
+        return as_of_date
+    return pd.Timestamp(cal.date_to_session(as_of_date, direction="previous"))
+
+
+def fetch_prices(
+    settings: Settings,
+    as_of: pd.Timestamp | str | None = None,
+    existing_bundle: DataBundle | None = None,
+    overlap_sessions: int = 10,
+) -> DataBundle:
+    """Fetch ETF prices from yfinance and align with XNYS exchange calendar.
+
+    If existing_bundle is provided, performs an incremental fetch starting
+    overlap_sessions before the end of the existing bundle to capture any vendor revisions,
+    merging and deduplicating the data.
+    """
+    cal = xcals.get_calendar("XNYS")
+    last_completed = resolve_last_completed_session(cal, as_of)
 
     start_dt = pd.Timestamp(settings.acquisition_start)
     expected_sessions = cal.sessions_in_range(start_dt, last_completed)
 
-    # Fetch data for tickers with retry and threads=False to avoid Windows SQLite concurrency lock
     tickers_list = list(settings.tickers)
+    fetch_start_dt = start_dt
+    cached_adj = None
+    cached_vol = None
+
+    if existing_bundle is not None and len(existing_bundle.sessions) > 0:
+        cached_adj = existing_bundle.adjusted_close.copy()
+        cached_vol = existing_bundle.volume.copy()
+        cached_adj.index = pd.to_datetime(cached_adj.index).tz_localize(None).normalize()
+        cached_vol.index = pd.to_datetime(cached_vol.index).tz_localize(None).normalize()
+        existing_sessions = pd.to_datetime(existing_bundle.sessions).tz_localize(None).normalize()
+        existing_last = existing_sessions[-1]
+
+        if existing_last > last_completed:
+            adj = cached_adj.reindex(expected_sessions)
+            vol = cached_vol.reindex(expected_sessions)
+            validate_sessions_and_prices(adj, vol, expected_sessions=expected_sessions)
+            manifest = dict(existing_bundle.manifest)
+            manifest["cutoff_session"] = last_completed.strftime("%Y-%m-%d")
+            return DataBundle(adjusted_close=adj, volume=vol, sessions=expected_sessions, manifest=manifest)
+
+        overlap_candidates = cal.sessions_in_range(start_dt, existing_last)
+        if len(overlap_candidates) > overlap_sessions:
+            fetch_start_dt = overlap_candidates[-overlap_sessions]
+        else:
+            fetch_start_dt = start_dt
+
     max_retries = 3
     raw_df = pd.DataFrame()
     last_err = None
@@ -169,7 +214,7 @@ def fetch_prices(settings: Settings, as_of: pd.Timestamp | None = None) -> DataB
         try:
             raw_df = yf.download(
                 tickers=tickers_list,
-                start=settings.acquisition_start,
+                start=fetch_start_dt.strftime("%Y-%m-%d"),
                 end=(last_completed + pd.Timedelta(days=5)).strftime("%Y-%m-%d"),
                 auto_adjust=False,
                 actions=True,
@@ -196,6 +241,13 @@ def fetch_prices(settings: Settings, as_of: pd.Timestamp | None = None) -> DataB
     adj_close.index = pd.to_datetime(adj_close.index).tz_localize(None).normalize()
     volume.index = pd.to_datetime(volume.index).tz_localize(None).normalize()
 
+    # Merge with cached data if doing incremental refresh:
+    # Newly fetched data takes precedence on overlapping sessions for revisions
+    if cached_adj is not None:
+        adj_close = pd.concat([cached_adj.loc[cached_adj.index < adj_close.index[0]], adj_close])
+    if cached_vol is not None:
+        volume = pd.concat([cached_vol.loc[cached_vol.index < volume.index[0]], volume])
+
     # Reindex to exact expected exchange sessions
     adj_close = adj_close.reindex(expected_sessions)
     volume = volume.reindex(expected_sessions)
@@ -210,11 +262,66 @@ def fetch_prices(settings: Settings, as_of: pd.Timestamp | None = None) -> DataB
         "cutoff_session": last_completed.strftime("%Y-%m-%d"),
         "yfinance_version": getattr(yf, "__version__", "unknown"),
         "adjustment_settings": {"auto_adjust": False, "price_column": "Adj Close"},
+        "incremental": existing_bundle is not None,
     }
 
     return DataBundle(
         adjusted_close=adj_close,
         volume=volume,
         sessions=expected_sessions,
+        manifest=manifest,
+    )
+
+
+def create_offline_synthetic_fixture(
+    settings: Settings,
+    start: str = "2016-01-04",
+    end: str = "2026-11-16",
+    random_seed: int = 42,
+) -> DataBundle:
+    """Generate a deterministic synthetic DataBundle for offline testing and pipeline demonstration.
+
+    Explicitly labeled as synthetic in its manifest. Never silently treated as real market prices.
+    Generates enough sessions (>= 4 years) to satisfy train/calibration/validation/test split constraints.
+    """
+    cal = xcals.get_calendar("XNYS")
+    sessions = cal.sessions_in_range(start, end)
+    n = len(sessions)
+    if n < 1460:
+        raise ValueError(f"Synthetic fixture requires at least 1460 trading sessions, got {n}")
+
+    rng = np.random.RandomState(random_seed)
+    tickers = list(settings.tickers)
+    drift = {
+        "SOXX": 0.012,
+        "XLK": 0.010,
+        "SPY": 0.006,
+        "SHY": 0.001,
+    }
+
+    data = {}
+    for t in tickers:
+        d = drift.get(t, 0.005)
+        ret = rng.randn(n) * d
+        data[t] = 100.0 * np.exp(np.cumsum(ret))
+
+    adj_df = pd.DataFrame(data, index=sessions)
+    vol_df = pd.DataFrame(10000.0, index=sessions, columns=tickers)
+
+    manifest = {
+        "source": "deterministic_offline_fixture",
+        "tickers": tickers,
+        "acquisition_start": start,
+        "cutoff_session": sessions[-1].strftime("%Y-%m-%d"),
+        "session_count": n,
+        "is_synthetic": True,
+        "disclaimer": "Synthetic fixture for pipeline demonstration and offline testing. NOT real market data.",
+    }
+
+    validate_sessions_and_prices(adj_df, vol_df, expected_sessions=sessions)
+    return DataBundle(
+        adjusted_close=adj_df,
+        volume=vol_df,
+        sessions=sessions,
         manifest=manifest,
     )

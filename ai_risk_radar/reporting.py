@@ -107,12 +107,20 @@ def build_report(
         results["selected"].metrics if "selected" in results else None
     )
 
+    horizon_sessions = int(metadata.get("target_horizon", 20))
+    loss_threshold = float(metadata.get("target_threshold", -0.05))
+    loss_threshold_pct = loss_threshold * 100.0
+    loss_def = (
+        metadata.get("loss_definition")
+        or f"Estimated probability of 50% SOXX / 50% XLK reference basket total return <= {loss_threshold_pct:.1f}% over next {horizon_sessions} trading sessions"
+    )
+
     limitations = [
         "Proxy limitations: SOXX and XLK represent semiconductor hardware and large-cap tech, not pure AI exposure.",
         "Execution realism: rebalance decisions on week's last session execute at next trading session close with 10 bps transaction cost.",
         "Holding drift: asset weights drift between rebalances as market prices change.",
         "Zero risk-free Sharpe convention: Sharpe ratios assume 0.0% risk-free rate strictly per project specification.",
-        "Temporal overlap: 20-trading-day forecast horizons overlap, so daily observations are not statistically independent.",
+        f"Temporal overlap: {horizon_sessions}-trading-day forecast horizons overlap, so daily observations are not statistically independent.",
     ]
 
     identity_dict = {
@@ -132,6 +140,8 @@ def build_report(
         "funding_cost_impact_bps",
         "verification_scope",
         "verified_metrics",
+        "target_horizon",
+        "target_threshold",
     ):
         if f_key in metadata:
             identity_dict[f_key] = metadata[f_key]
@@ -147,9 +157,9 @@ def build_report(
         },
         "forecast": {
             "as_of_session": as_of_session,
-            "horizon_sessions": 20,
-            "loss_threshold": -0.05,
-            "loss_definition": "Estimated probability of 50% SOXX / 50% XLK reference basket total return <= -5.0% over next 20 trading sessions",
+            "horizon_sessions": horizon_sessions,
+            "loss_threshold": loss_threshold,
+            "loss_definition": loss_def,
             "probability": display_prob,
             "probability_status": prob_status,
             "fallback_reason": fallback_reason,
