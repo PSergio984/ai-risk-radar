@@ -34,15 +34,16 @@ Reference AI basket: `50% SOXX + 50% XLK` (buy-and-hold through each 20-session 
 
 ## 3. Environment Setup & Clean First Use
 
-The project runs in Python 3.12+ as a standalone repository rooted at `/`.
+The project supports Python 3.10+ and should be run from the repository checkout root.
 
 ### Step 1: Create Virtual Environment
 
 ```bash
 # In repository root:
 python -m venv .venv
-.venv\Scripts\activate       # Windows PowerShell / CMD
-# source .venv/bin/activate  # Linux / macOS
+# Windows PowerShell: .\.venv\Scripts\Activate.ps1
+# Windows CMD:        .venv\Scripts\activate.bat
+# Linux / macOS:      source .venv/bin/activate
 ```
 
 ### Step 2: Install Dependencies & Editable Package
@@ -74,7 +75,7 @@ ruff check .
 The system features four distinct operational workflows separating ingestion, research, holdout reproduction, and live inference:
 
 ### 1. Ingestion / Data Acquisition
-Fetch live price data from yfinance aligned with the NYSE (`XNYS`) exchange calendar. New data are isolated in `data/raw/latest`, preserving frozen baseline replay snapshots in `data/raw/snapshot`:
+Fetch live price data from yfinance aligned with the NYSE (`XNYS`) exchange calendar. New data are isolated in `data/raw/latest`, preserving frozen baseline replay snapshots in `data/raw/snapshot`. Note that `latest` inference requires an existing release (`artifacts/release.json`); on a fresh clone without artifacts, run `research` first or inspect pre-cached snapshots:
 
 ```bash
 python -m ai_risk_radar latest --data-mode refresh
@@ -109,7 +110,7 @@ python -m ai_risk_radar latest --release artifacts/release.json --data-mode cach
 
 ## 6. Comprehensive 43-Feature Inventory
 
-The feature pipeline in `ai_risk_radar/features.py` engineers exactly **43 causal features** derived strictly from price and volume history available at the previous session close ($t-1$):
+The feature pipeline in `ai_risk_radar/features.py` engineers exactly **43 causal features** derived strictly from adjusted-price history available at the previous session close ($t-1$); signals execute at the next trading session's close:
 
 | Feature Category | Count | Feature Names / Formula | Causal Availability | Beyond Lecture Examples |
 | :--- | :---: | :--- | :---: | :--- |
@@ -178,7 +179,7 @@ Quantitative evaluation across non-overlapping market regimes reveals key model 
 - **Sideways / High-Volatility Chop Regimes:** When the reference basket oscillates near the -5.0% threshold without a sustained directional trend, the model experiences false-positive churn. This generates turnover costs without achieving downside protection, highlighting the limitation of weekly discrete rotation.
 
 ### 2. Platt Scaling Calibration & Support Disclosures
-- **Calibration Support Requirements:** Platt scaling requires adequate positive downside occurrences in the 12-month calibration partition. When training on prolonged bull markets, downside event prevalence can drop below empirical support thresholds (<20 observations or <2 positive events separated by 20 sessions).
+- **Calibration Support Requirements:** Platt scaling requires adequate positive downside occurrences in the 12-month calibration partition (requires at least 20 observations in each binary class and at least two positive events separated by at least 20 trading sessions).
 - **Graceful Fallback:** If calibration support is inadequate, probability output is marked `unavailable` and portfolio allocation safely defaults to the fixed baseline allocation (20% SOXX, 20% XLK, 20% SPY, 40% SHY) rather than emitting misleading probabilities.
 
 ### 3. Threshold Selection Sensitivity

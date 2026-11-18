@@ -98,6 +98,11 @@ def run_research(settings: Settings, data_mode: str = "cache") -> Path:
     else:
         raise ValueError(f"Invalid data_mode: '{data_mode}'. Must be 'refresh' or 'cache'.")
 
+    if bundle.manifest.get("is_synthetic") and not getattr(settings, "allow_synthetic", False):
+        raise ValueError(
+            "Production guard violation: synthetic data cannot be used for research release without explicit allow_synthetic=True."
+        )
+
     # 2. Features and Splits
     feat_set = build_features(bundle, settings)
     from ai_risk_radar.splits import make_splits
@@ -190,6 +195,8 @@ def run_research(settings: Settings, data_mode: str = "cache") -> Path:
         "fallback_reason": rf_bundle.metadata.get("reason"),
         "boundaries": splits.boundaries,
         "validation_metrics": selected_res.metrics,
+        "target_horizon": int(settings.target_horizon),
+        "target_threshold": float(settings.target_threshold),
     }
     if previous_consumption is not None:
         release_payload["previous_holdout_consumption"] = previous_consumption
@@ -442,6 +449,10 @@ def run_final_test(
     # Load cached snapshot
     snapshot_dir = Path(settings.raw_dir) / "snapshot"
     bundle = load_snapshot(snapshot_dir)
+    if bundle.manifest.get("is_synthetic") and not getattr(settings, "allow_synthetic", False):
+        raise ValueError(
+            "Production guard violation: synthetic data cannot be used for final holdout test evaluation."
+        )
 
     # Validate data manifest hash against release data hash if tracked
     actual_data_hash = "unknown"
@@ -473,14 +484,16 @@ def run_final_test(
                     f"Partition boundary mismatch on reproduction: expected {b_key}={exp_val}, got {act_val}. "
                     "Altered partition dates cannot silently reuse a consumed holdout."
                 )
-        if settings.target_horizon != 20:
+        exp_target_horizon = int(release_data.get("target_horizon", 20))
+        exp_target_threshold = float(release_data.get("target_threshold", -0.05))
+        if settings.target_horizon != exp_target_horizon:
             raise ValueError(
-                f"Execution convention mismatch: expected target_horizon=20, got {settings.target_horizon}. "
+                f"Execution convention mismatch: expected target_horizon={exp_target_horizon}, got {settings.target_horizon}. "
                 "Altered conventions cannot silently reuse a consumed holdout."
             )
-        if abs(settings.target_threshold - (-0.05)) > 1e-6:
+        if abs(settings.target_threshold - exp_target_threshold) > 1e-6:
             raise ValueError(
-                f"Execution convention mismatch: expected target_threshold=-0.05, got {settings.target_threshold}. "
+                f"Execution convention mismatch: expected target_threshold={exp_target_threshold}, got {settings.target_threshold}. "
                 "Altered conventions cannot silently reuse a consumed holdout."
             )
         if settings.random_seed != 42:
@@ -754,11 +767,16 @@ def run_latest(
     if data_manifest_path.is_file():
         actual_data_hash = _compute_sha256(data_manifest_path)
 
-    compound_release_hash = (
-        release_data.get("hashes", {}).get("release")
-        or release_data.get("release_hash")
-        or _compute_release_hash(actual_model_hash, actual_data_hash, actual_policy_hash)
-    )
+    if active_data_dir.name == "latest":
+        compound_release_hash = _compute_release_hash(
+            actual_model_hash, actual_data_hash, actual_policy_hash
+        )
+    else:
+        compound_release_hash = (
+            release_data.get("hashes", {}).get("release")
+            or release_data.get("release_hash")
+            or _compute_release_hash(actual_model_hash, actual_data_hash, actual_policy_hash)
+        )
 
     metadata = {
         "pipeline_mode": "latest",

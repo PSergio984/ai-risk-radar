@@ -146,7 +146,8 @@ def resolve_last_completed_session(
         now_ny = pd.Timestamp.now(tz="UTC").tz_convert("America/New_York")
         today_date = pd.Timestamp(now_ny.date())
         if cal.is_session(today_date):
-            if now_ny.hour >= 16:
+            market_close = cal.session_close(today_date).tz_convert("America/New_York")
+            if now_ny >= market_close:
                 return today_date
             return pd.Timestamp(cal.previous_session(today_date))
         return pd.Timestamp(cal.date_to_session(today_date, direction="previous"))
@@ -185,7 +186,7 @@ def fetch_prices(
 
     if existing_bundle is not None and len(existing_bundle.sessions) > 0:
         existing_last = existing_bundle.sessions[-1]
-        if existing_last >= last_completed:
+        if existing_last > last_completed:
             adj = existing_bundle.adjusted_close.reindex(expected_sessions)
             vol = existing_bundle.volume.reindex(expected_sessions)
             validate_sessions_and_prices(adj, vol, expected_sessions=expected_sessions)
@@ -199,8 +200,10 @@ def fetch_prices(
         else:
             fetch_start_dt = start_dt
 
-        cached_adj = existing_bundle.adjusted_close
-        cached_vol = existing_bundle.volume
+        cached_adj = existing_bundle.adjusted_close.copy()
+        cached_vol = existing_bundle.volume.copy()
+        cached_adj.index = pd.to_datetime(cached_adj.index).tz_localize(None).normalize()
+        cached_vol.index = pd.to_datetime(cached_vol.index).tz_localize(None).normalize()
 
     max_retries = 3
     raw_df = pd.DataFrame()

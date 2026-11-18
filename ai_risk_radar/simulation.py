@@ -277,7 +277,18 @@ def vectorized_linear_backtest(
 
     # 1. Forward-fill target weights across all sessions
     w_df = targets[tickers].reindex(sessions).ffill()
-    if w_df.empty or w_df.iloc[0].isna().all():
+    if w_df.empty:
+        empty_daily = pd.DataFrame(index=sessions)
+        return BacktestResult(
+            daily=empty_daily,
+            trades=pd.DataFrame(),
+            metrics=compute_metrics(
+                empty_daily,
+                pd.DataFrame(),
+                settings.initial_capital,
+            ),
+        )
+    if w_df.iloc[0].isna().all():
         w_df.iloc[0] = list(settings.weights_growth)
         w_df = w_df.ffill()
 
@@ -303,6 +314,10 @@ def vectorized_linear_backtest(
     else:
         v0_funded = init_cap
         fund_cost = 0.0
+
+    # The initial equity change from cash funding is exactly -fund_cost / init_cap
+    if len(net_rets) > 0:
+        net_rets.iloc[0] = -fund_cost / init_cap if init_cap > 0 else 0.0
 
     equity_factors = (1.0 + net_rets.iloc[1:]).cumprod()
     equity_series = pd.Series(index=sessions, dtype=float)
@@ -376,7 +391,8 @@ def reconcile_vectorized_and_sequential(
         reconciliation_table[k] = {
             "sequential": s_val,
             "vectorized": v_val,
-            "absolute_diff": diff,
+            "difference": diff,
+            "absolute_diff": abs(diff) if diff is not None else None,
         }
 
     return {
@@ -388,9 +404,8 @@ def reconcile_vectorized_and_sequential(
             "intra-week and subtracts a first-order turnover penalty (r_t = sum w_{t-1} R_t - c sum |Delta w_t|). "
             "The sequential execution engine tracks exact physical share value drift between rebalance dates and "
             "solves nonlinear self-financing cash conservation via Brent's method (V_post + Cost = V_pre). "
-            "This numerical comparison (~30-50 bps over multi-year backtests, e.g. ~35 bps on synthetic data, "
-            "43.4 bps on validation data) serves as an empirical smoke check. Numerical proximity does not prove "
-            "equivalent execution or fee mechanics, as divergence varies naturally with return dispersion and "
-            "rebalance frequency across datasets."
+            "This numerical comparison serves as an empirical smoke check for the supplied dataset. Numerical "
+            "proximity does not prove equivalent execution or fee mechanics, as divergence varies naturally "
+            "with return dispersion and rebalance frequency across datasets."
         ),
     }
