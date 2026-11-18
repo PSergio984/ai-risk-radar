@@ -300,6 +300,50 @@ def test_incremental_cache_refresh_merges_and_deduplicates(tmp_path: Path):
     assert refreshed.adjusted_close.loc[overlap_date, "SOXX"] == 105.0
 
 
+def test_incremental_cache_refresh_handles_timezone_aware_cached_bundle(tmp_path: Path):
+    """Incremental fetch must handle cached bundles with timezone-aware session indices."""
+    settings = _make_tiny_settings(tmp_path, start="2026-01-05")
+    cal = xcals.get_calendar("XNYS")
+    all_sessions = cal.sessions_in_range("2026-01-05", "2026-06-30")
+
+    # Initial bundle with UTC-aware index and sessions
+    bundle1 = _make_tiny_authored_bundle(start="2026-01-05", end="2026-05-15")
+    tz_adj = bundle1.adjusted_close.copy()
+    tz_vol = bundle1.volume.copy()
+    tz_adj.index = tz_adj.index.tz_localize("UTC")
+    tz_vol.index = tz_vol.index.tz_localize("UTC")
+    tz_sessions = [pd.Timestamp(s, tz="UTC") for s in bundle1.sessions]
+    bundle_tz = DataBundle(
+        adjusted_close=tz_adj,
+        volume=tz_vol,
+        sessions=tz_sessions,
+        manifest=bundle1.manifest,
+    )
+
+    overlap_sessions = cal.sessions_in_range("2026-05-08", "2026-06-30")
+    mock_raw = pd.DataFrame(
+        index=overlap_sessions,
+        columns=pd.MultiIndex.from_product([["Adj Close", "Volume"], list(settings.tickers)]),
+    )
+    for t in settings.tickers:
+        mock_raw[("Adj Close", t)] = 105.0
+        mock_raw[("Volume", t)] = 12000.0
+
+    with patch("yfinance.download", return_value=mock_raw):
+        refreshed = fetch_prices(
+            settings,
+            as_of="2026-06-30",
+            existing_bundle=bundle_tz,
+            overlap_sessions=5,
+        )
+
+    assert refreshed.manifest.get("incremental") is True
+    assert len(refreshed.sessions) == len(all_sessions)
+    assert refreshed.sessions[-1] == pd.Timestamp("2026-06-30")
+    assert refreshed.adjusted_close.index.tz is None
+
+
+
 # ---------------------------------------------------------------------------
 # Vectorized matrix baseline & reconciliation
 # ---------------------------------------------------------------------------

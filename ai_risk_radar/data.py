@@ -185,10 +185,16 @@ def fetch_prices(
     cached_vol = None
 
     if existing_bundle is not None and len(existing_bundle.sessions) > 0:
-        existing_last = existing_bundle.sessions[-1]
+        cached_adj = existing_bundle.adjusted_close.copy()
+        cached_vol = existing_bundle.volume.copy()
+        cached_adj.index = pd.to_datetime(cached_adj.index).tz_localize(None).normalize()
+        cached_vol.index = pd.to_datetime(cached_vol.index).tz_localize(None).normalize()
+        existing_sessions = pd.to_datetime(existing_bundle.sessions).tz_localize(None).normalize()
+        existing_last = existing_sessions[-1]
+
         if existing_last > last_completed:
-            adj = existing_bundle.adjusted_close.reindex(expected_sessions)
-            vol = existing_bundle.volume.reindex(expected_sessions)
+            adj = cached_adj.reindex(expected_sessions)
+            vol = cached_vol.reindex(expected_sessions)
             validate_sessions_and_prices(adj, vol, expected_sessions=expected_sessions)
             manifest = dict(existing_bundle.manifest)
             manifest["cutoff_session"] = last_completed.strftime("%Y-%m-%d")
@@ -199,11 +205,6 @@ def fetch_prices(
             fetch_start_dt = overlap_candidates[-overlap_sessions]
         else:
             fetch_start_dt = start_dt
-
-        cached_adj = existing_bundle.adjusted_close.copy()
-        cached_vol = existing_bundle.volume.copy()
-        cached_adj.index = pd.to_datetime(cached_adj.index).tz_localize(None).normalize()
-        cached_vol.index = pd.to_datetime(cached_vol.index).tz_localize(None).normalize()
 
     max_retries = 3
     raw_df = pd.DataFrame()
