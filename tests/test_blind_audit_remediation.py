@@ -437,6 +437,7 @@ def test_clean_checkout_notebook_acquisition_and_execution_in_isolation(tmp_path
         "--to",
         "notebook",
         "--execute",
+        "--ExecutePreprocessor.kernel_name=python3",
         str(ws_dir / "notebooks" / "end_to_end.ipynb"),
         "--output",
         "executed_end_to_end.ipynb",
