@@ -388,9 +388,9 @@ def reconcile_vectorized_and_sequential(
             "intra-week and subtracts a first-order turnover penalty (r_t = sum w_{t-1} R_t - c sum |Delta w_t|). "
             "The sequential execution engine tracks exact physical share value drift between rebalance dates and "
             "solves nonlinear self-financing cash conservation via Brent's method (V_post + Cost = V_pre). "
-            "Their numerical proximity (typically 30-50 bps over multi-year backtests, e.g. ~35 bps on synthetic data, "
-            "43.4 bps on validation data) reflects matched institutional conventions (1-session delay, initial funding fee, "
-            "10 bps turnover penalty). The divergence magnitude naturally varies across datasets, return dispersion, and "
-            "rebalance frequencies rather than establishing exact mathematical identity."
+            "This numerical comparison (~30-50 bps over multi-year backtests, e.g. ~35 bps on synthetic data, "
+            "43.4 bps on validation data) serves as an empirical smoke check. Numerical proximity does not prove "
+            "equivalent execution or fee mechanics, as divergence varies naturally with return dispersion and "
+            "rebalance frequency across datasets."
         ),
     }

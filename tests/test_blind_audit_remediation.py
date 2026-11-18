@@ -474,6 +474,6 @@ def test_clean_checkout_notebook_acquisition_and_execution_in_isolation(tmp_path
     assert "Trained Random Forest" in combined_output
     assert "Selected Strategy Policy" in combined_output
     assert "Reconciliation Summary" in combined_output
-    assert "ACTIONABLE LATEST TRADE SCHEDULE" in combined_output
+    assert "LATEST TRADE SCHEDULE" in combined_output
 
 

@@ -159,12 +159,13 @@ Sample Reconciliation Summary (Validation Partition, 2022-11-18 to 2024-11-18):
   turnover               | Sequential:     4.8338 | Vectorized:     4.3100 | Diff: +0.5238
 ```
 
-**Methodological Interpretation of Agreement:**
-1. **Conventions vs Equivalence:** Close numerical proximity (~30–50 bps over multi-year horizons, e.g. ~35 bps on synthetic test fixtures, 43.4 bps on the 2-year validation partition) confirms that both implementations adhere to matched institutional conventions: 1-session delayed execution, initial capital funding deduction, and a 10 bps turnover penalty. Numerical proximity alone does *not* imply identical mathematical formulas.
-2. **Sources of Divergence:** The residual divergence varies naturally across datasets and time periods depending on:
-   - **Intra-Week Price Dispersion & Drift:** Asset prices move independently between rebalances, causing physical share weights to drift away from target weights. Higher return dispersion increases intra-week drift, requiring greater rebalance turnover (+0.52x) in the sequential engine.
-   - **Nonlinear Cost Conservation:** Brent's method solves the exact implicit relation $V^{\text{post}} + c \sum |w_j V^{\text{post}} - h_j^{\text{pre}}| = V^{\text{pre}}$, whereas the linear vector backtest subtracts $c \sum |\Delta w|$.
-3. **Exact Mathematical Equivalence Case:** When asset prices are constant (or returns are identical across all assets with zero rebalancing costs), intra-week holding drift is exactly zero and Brent's method simplifies linearly. In this case, vectorized and sequential backtests produce bit-exact identical returns ($0.000000$ difference), as verified by deterministic unit tests.
+**Methodological Interpretation of Comparison:**
+1. **Empirical Smoke Check vs Proof:** The observed numerical comparison (~30–50 bps over multi-year horizons: ~35 bps on synthetic test fixtures, 43.4 bps on the 2-year validation partition) serves as an empirical comparison and smoke check showing that the linear approximation tracks sequential equity trends. Numerical proximity does *not* prove equivalent delayed execution or transaction fee mechanics, as the two backtests rely on fundamentally different mathematical assumptions.
+2. **Approximation Assumptions vs Physical Drift:**
+   - The vectorized baseline assumes static intra-week weights and applies a first-order linear penalty $c \sum |\Delta w|$.
+   - The sequential engine tracks daily physical share price drift and solves exact nonlinear self-financing cash conservation via Brent's method ($V^{\text{post}} + c \sum |w_j V^{\text{post}} - h_j^{\text{pre}}| = V^{\text{pre}}$).
+   - Divergence varies naturally across datasets depending on intra-period price dispersion and rebalancing frequency (+0.52x turnover in sequential engine during tech rallies).
+3. **Zero-Drift Benchmark as Unit Check:** When asset prices are constant (zero price drift) and transaction costs are set to zero, intra-week holding drift is mathematically eliminated. In this idealized case, both engines produce bit-exact identical returns ($0.000000$ difference), confirming baseline return compounding as a unit smoke check without validating non-zero fee solvers or dynamic price movements.
 
 ---
 
@@ -238,7 +239,7 @@ This matrix maps project deliverables directly to the **Stock Markets Analytics 
 | **Transformations & EDA** | Causal feature engineering, distributions, lookahead avoidance | 43 causal price-derived features (returns, realized volatilities, drawdowns, relative strength, correlations), non-overlapping event distribution | `ai_risk_radar/features.py`, `notebooks/research.ipynb`, `tests/test_features.py` |
 | **Modeling & Calibration** | Temporal cross-validation, baseline comparisons, calibrated probabilities | Constant baseline, Decision Tree, Random Forest with 3 expanding purged folds, Platt scaling calibrator with support guards | `ai_risk_radar/models.py`, `tests/test_models.py` |
 | **Trading Simulation** | Execution realism, transaction costs, baseline comparison, sensitivity | Delayed execution, daily drifted holding weights, exact transaction cost deduction (10 bps baseline, 5/25 bps sensitivity), comparison vs 3 benchmarks | `ai_risk_radar/simulation.py`, `ai_risk_radar/metrics.py`, `tests/test_simulation.py` |
-| **Vectorized Reconciliation** | Distinct vectorized linear approximation and sequential reconciliation | Vectorized linear matrix approximation reconciled with sequential daily-drift engine under matched conventions (~30–50 bps divergence depending on market drift; exact in zero-drift tests) | `ai_risk_radar/simulation.py:L260-390`, `notebooks/end_to_end.ipynb`, `tests/test_blind_audit_remediation.py` |
+| **Vectorized Reconciliation** | Distinct vectorized linear approximation and sequential reconciliation | Vectorized linear matrix approximation compared with sequential daily-drift engine as an empirical smoke check (~30–50 bps divergence depending on market drift; exact in zero-drift unit tests) | `ai_risk_radar/simulation.py:L260-390`, `notebooks/end_to_end.ipynb`, `tests/test_blind_audit_remediation.py` |
 | **Automation & Interface** | Interactive interface, scheduled automation, reproducible execution | Production-grade two-mode Streamlit dashboard (`app.py`), modular CLI commands (`latest`, `research`, `final-test`) suitable for standard OS schedulers (cron / Task Scheduler) with incremental overlapping cache ingestion (`fetch_prices`), and interactive end-to-end notebook (`notebooks/end_to_end.ipynb`) supporting clean first-use data acquisition and actionable trade schedule generation | `app.py`, `notebooks/end_to_end.ipynb`, `ai_risk_radar/data.py`, `tests/test_app.py`, `tests/test_views.py` |
 
 ---
