@@ -179,6 +179,49 @@ def resolve_last_completed_session(
     return pd.Timestamp(cal.date_to_session(session_date, direction="previous"))
 
 
+def _download_price_data(
+    tickers_list: list[str],
+    start_dt: pd.Timestamp,
+    end_dt: pd.Timestamp,
+    max_retries: int = 3,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Download adjusted close and volume data from yfinance with retry handling."""
+    raw_df = pd.DataFrame()
+    last_err = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            raw_df = yf.download(
+                tickers=tickers_list,
+                start=start_dt.strftime("%Y-%m-%d"),
+                end=(end_dt + pd.Timedelta(days=5)).strftime("%Y-%m-%d"),
+                auto_adjust=False,
+                actions=True,
+                progress=False,
+                threads=False,
+            )
+            if not raw_df.empty:
+                break
+        except (OSError, RuntimeError, ConnectionError, ValueError, TimeoutError) as e:
+            last_err = e
+
+    if raw_df.empty:
+        raise RuntimeError(f"yfinance returned an empty dataset after {max_retries} attempts: {last_err}")
+
+    # Extract Adj Close and Volume
+    if isinstance(raw_df.columns, pd.MultiIndex):
+        adj_close = raw_df["Adj Close"][tickers_list].copy()
+        volume = raw_df["Volume"][tickers_list].copy()
+    else:
+        adj_close = pd.DataFrame({tickers_list[0]: raw_df["Adj Close"]})
+        volume = pd.DataFrame({tickers_list[0]: raw_df["Volume"]})
+
+    # Normalize index to tz-naive
+    adj_close.index = pd.to_datetime(adj_close.index).tz_localize(None).normalize()
+    volume.index = pd.to_datetime(volume.index).tz_localize(None).normalize()
+    return adj_close, volume
+
+
 def fetch_prices(
     settings: Settings,
     as_of: pd.Timestamp | str | None = None,
@@ -225,40 +268,7 @@ def fetch_prices(
         else:
             fetch_start_dt = start_dt
 
-    max_retries = 3
-    raw_df = pd.DataFrame()
-    last_err = None
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            raw_df = yf.download(
-                tickers=tickers_list,
-                start=fetch_start_dt.strftime("%Y-%m-%d"),
-                end=(last_completed + pd.Timedelta(days=5)).strftime("%Y-%m-%d"),
-                auto_adjust=False,
-                actions=True,
-                progress=False,
-                threads=False,
-            )
-            if not raw_df.empty:
-                break
-        except (OSError, RuntimeError, ConnectionError, ValueError, TimeoutError) as e:
-            last_err = e
-
-    if raw_df.empty:
-        raise RuntimeError(f"yfinance returned an empty dataset after {max_retries} attempts: {last_err}")
-
-    # Extract Adj Close and Volume
-    if isinstance(raw_df.columns, pd.MultiIndex):
-        adj_close = raw_df["Adj Close"][tickers_list].copy()
-        volume = raw_df["Volume"][tickers_list].copy()
-    else:
-        adj_close = pd.DataFrame({tickers_list[0]: raw_df["Adj Close"]})
-        volume = pd.DataFrame({tickers_list[0]: raw_df["Volume"]})
-
-    # Normalize index to tz-naive
-    adj_close.index = pd.to_datetime(adj_close.index).tz_localize(None).normalize()
-    volume.index = pd.to_datetime(volume.index).tz_localize(None).normalize()
+    adj_close, volume = _download_price_data(tickers_list, fetch_start_dt, last_completed)
 
     overlap_coherent = True
     if cached_adj is not None:
@@ -275,35 +285,7 @@ def fetch_prices(
 
     if not overlap_coherent and fetch_start_dt != start_dt:
         # Adjustment revision detected or non-overlapping gap: download full coherent history
-        raw_df = pd.DataFrame()
-        for attempt in range(1, max_retries + 1):
-            try:
-                raw_df = yf.download(
-                    tickers=tickers_list,
-                    start=start_dt.strftime("%Y-%m-%d"),
-                    end=(last_completed + pd.Timedelta(days=5)).strftime("%Y-%m-%d"),
-                    auto_adjust=False,
-                    actions=True,
-                    progress=False,
-                    threads=False,
-                )
-                if not raw_df.empty:
-                    break
-            except (OSError, RuntimeError, ConnectionError, ValueError, TimeoutError) as e:
-                last_err = e
-
-        if raw_df.empty:
-            raise RuntimeError(f"yfinance returned an empty dataset after {max_retries} attempts: {last_err}")
-
-        if isinstance(raw_df.columns, pd.MultiIndex):
-            adj_close = raw_df["Adj Close"][tickers_list].copy()
-            volume = raw_df["Volume"][tickers_list].copy()
-        else:
-            adj_close = pd.DataFrame({tickers_list[0]: raw_df["Adj Close"]})
-            volume = pd.DataFrame({tickers_list[0]: raw_df["Volume"]})
-
-        adj_close.index = pd.to_datetime(adj_close.index).tz_localize(None).normalize()
-        volume.index = pd.to_datetime(volume.index).tz_localize(None).normalize()
+        adj_close, volume = _download_price_data(tickers_list, start_dt, last_completed)
         full_history_refresh = True
     else:
         full_history_refresh = (existing_bundle is None)

@@ -89,7 +89,7 @@ python -m ai_risk_radar research --config config.json --data-mode cache
 # Use --data-mode refresh to fetch live prices incrementally
 ```
 
-### 3. Single-Use Final Holdout Test & Bit-Exact Reproduction (`final-test`)
+### 3. Single-Use Final Holdout Test & Metric Reproduction (`final-test`)
 Evaluates the frozen release model on the 24-month holdout test partition (2024-11-18 to 2026-11-16, 500 trading sessions). Cryptographic SHA-256 release hashes and policy parameters are strictly verified before execution:
 
 - **First-Time Evaluation:** Evaluates an untouched release manifest, records holdout consumption in `release.json`, and writes `artifacts/final_test_report.json`.
