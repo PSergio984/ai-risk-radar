@@ -77,7 +77,10 @@ def build_report(
     if prob_status == "unavailable" or selected_threshold is None or raw_prob is None or np.isnan(raw_prob):
         strategy_mode = "Fixed Baseline (Fallback)"
         alloc_weights = dict(zip(tickers, weights_fixed))
-        trade_desc = "Probability unavailable; maintaining fixed defensive baseline allocation."
+        if prob_status == "unavailable" or raw_prob is None or np.isnan(raw_prob):
+            trade_desc = "Probability unavailable; maintaining fixed defensive baseline allocation."
+        else:
+            trade_desc = "No adaptive policy selected during validation; maintaining fixed defensive baseline allocation."
         trade_required = False
     elif raw_prob >= float(selected_threshold):
         strategy_mode = "Defensive"

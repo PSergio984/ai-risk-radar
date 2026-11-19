@@ -231,6 +231,11 @@ def main() -> None:
             f"⚠️ **Risk Probability Unavailable:** {c_view['fallback_reason']}. "
             "Strategy has safely fallen back to Fixed Baseline allocation."
         )
+    elif c_view.get("allocation", {}).get("strategy_mode") == "Fixed Baseline (Fallback)":
+        st.info(
+            "ℹ️ **Adaptive Policy Fallback:** No adaptive threshold met validation criteria. "
+            "Strategy safely operates on Fixed Baseline allocation."
+        )
 
     # Common Compact View Content
     st.markdown("---")

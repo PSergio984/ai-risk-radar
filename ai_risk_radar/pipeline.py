@@ -5,12 +5,18 @@ import json
 import shutil
 from pathlib import Path
 
+import exchange_calendars as xcals
 import joblib
 import pandas as pd
 
 from ai_risk_radar.config import load_settings
 from ai_risk_radar.contracts import Settings
-from ai_risk_radar.data import fetch_prices, load_snapshot, save_snapshot
+from ai_risk_radar.data import (
+    fetch_prices,
+    load_snapshot,
+    resolve_last_completed_session,
+    save_snapshot,
+)
 from ai_risk_radar.features import build_features
 from ai_risk_radar.models import classification_report, fit_models, predict_risk
 from ai_risk_radar.provenance import lookup_historical_provenance
@@ -56,6 +62,25 @@ def _compute_release_hash(model_hash: str, data_hash: str, policy_hash: str) -> 
     """Compute compound SHA256 covering model weights, data manifest, and policy configuration."""
     compound = f"{model_hash}:{data_hash}:{policy_hash}"
     return hashlib.sha256(compound.encode("utf-8")).hexdigest()
+
+
+def format_threshold_key(th: float) -> str:
+    """Format threshold key preserving exact float precision without collision."""
+    val_2d = f"{float(th):.2f}"
+    if abs(float(val_2d) - float(th)) < 1e-9:
+        return f"threshold_{val_2d}"
+    s = f"{float(th):.6f}".rstrip("0").rstrip(".")
+    return f"threshold_{s}"
+
+
+def parse_threshold_key(key: str) -> float | None:
+    """Parse float threshold from strategy key, or None if not a threshold key."""
+    if not isinstance(key, str) or not key.startswith("threshold_"):
+        return None
+    try:
+        return float(key.split("threshold_")[1])
+    except (ValueError, IndexError):
+        return None
 
 
 def run_research(settings: Settings, data_mode: str = "cache") -> Path:
@@ -125,8 +150,10 @@ def run_research(settings: Settings, data_mode: str = "cache") -> Path:
     val_risk = predict_risk(rf_bundle, val_frame)
 
     candidates = {}
+    threshold_by_key: dict[str, float] = {}
     for th in settings.candidate_thresholds:
-        key = f"threshold_{th:.2f}"
+        key = format_threshold_key(th)
+        threshold_by_key[key] = float(th)
         targets = weekly_targets(val_risk, splits.validation, settings, threshold=th)
         res = simulate(val_prices, targets, settings, cost_rate=settings.cost_rate)
         candidates[key] = res
@@ -155,7 +182,7 @@ def run_research(settings: Settings, data_mode: str = "cache") -> Path:
     selected_key = select_strategy(candidates, base_res)
     if selected_key is not None and rf_bundle.metadata.get("probability_status") == "calibrated":
         selected_res = candidates[selected_key]
-        selected_threshold = float(selected_key.split("_")[1])
+        selected_threshold = threshold_by_key.get(selected_key, parse_threshold_key(selected_key))
     else:
         selected_key = "fixed_defensive_weekly"
         selected_res = base_res
@@ -520,7 +547,7 @@ def run_final_test(
 
     candidates = {}
     for th in settings.candidate_thresholds:
-        key = f"threshold_{th:.2f}"
+        key = format_threshold_key(th)
         targets = weekly_targets(test_risk, splits.test, settings, threshold=th)
         res = simulate(test_prices, targets, settings, cost_rate=settings.cost_rate)
         candidates[key] = res
@@ -545,7 +572,7 @@ def run_final_test(
     )
 
     if selected_threshold is not None:
-        strat_key = f"threshold_{selected_threshold:.2f}"
+        strat_key = format_threshold_key(selected_threshold)
         if strat_key in candidates:
             selected_res = candidates[strat_key]
         else:
@@ -707,6 +734,7 @@ def run_latest(
     data_mode: str = "cache",
     config_path: Path | str | None = None,
     settings: Settings | None = None,
+    as_of: pd.Timestamp | str | None = None,
 ) -> Path:
     """Generate latest real-time risk estimate and allocation suggestion using frozen release model."""
     rel_path = Path(release_manifest).resolve()
@@ -736,7 +764,7 @@ def run_latest(
             existing_bundle = load_snapshot(latest_dir)
         elif (snapshot_dir / "manifest.json").is_file():
             existing_bundle = load_snapshot(snapshot_dir)
-        bundle = fetch_prices(settings, existing_bundle=existing_bundle)
+        bundle = fetch_prices(settings, as_of=as_of, existing_bundle=existing_bundle)
         save_snapshot(bundle, latest_dir)
         active_data_dir = latest_dir
     else:
@@ -757,7 +785,14 @@ def run_latest(
 
     as_of_session = feat_set.frame.index[-1]
     now_ny = pd.Timestamp.now(tz="UTC").tz_convert("America/New_York")
-    staleness = int((now_ny.normalize().tz_localize(None) - as_of_session).days)
+    cal = xcals.get_calendar("XNYS")
+    last_completed = resolve_last_completed_session(cal, as_of if as_of is not None else now_ny)
+    as_of_session_ts = pd.Timestamp(as_of_session)
+    if as_of_session_ts >= last_completed:
+        staleness = 0
+    else:
+        intervening = cal.sessions_in_range(as_of_session_ts, last_completed)
+        staleness = max(0, len(intervening) - 1)
 
     selected_threshold = release_data.get("selected_threshold")
     actual_policy_hash = _compute_policy_hash(selected_threshold, settings)
@@ -778,15 +813,16 @@ def run_latest(
     if data_manifest_path.is_file():
         actual_data_hash = _compute_sha256(data_manifest_path)
 
-    if active_data_dir.name == "latest":
-        compound_release_hash = _compute_release_hash(
-            actual_model_hash, actual_data_hash, actual_policy_hash
-        )
-    else:
+    expected_data_hash = release_data.get("hashes", {}).get("data")
+    if active_data_dir.name != "latest" and expected_data_hash and actual_data_hash == expected_data_hash:
         compound_release_hash = (
             release_data.get("hashes", {}).get("release")
             or release_data.get("release_hash")
             or _compute_release_hash(actual_model_hash, actual_data_hash, actual_policy_hash)
+        )
+    else:
+        compound_release_hash = _compute_release_hash(
+            actual_model_hash, actual_data_hash, actual_policy_hash
         )
 
     metadata = {
