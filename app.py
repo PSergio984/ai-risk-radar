@@ -172,6 +172,39 @@ def load_report_data() -> tuple[Report | None, str | None]:
         return None, None
 
 
+def resolve_fallback_banner(c_view: dict) -> tuple[str, str] | None:
+    """Determine whether a fallback banner should be rendered, returning (type, message) or None.
+
+    Banner types:
+    - 'error': Risk probability is unavailable or NaN.
+    - 'info': Risk probability is valid, but no adaptive policy threshold qualified.
+    """
+    prob_val = c_view.get("probability")
+    is_prob_unavailable = (
+        c_view.get("probability_status") == "unavailable"
+        or prob_val is None
+        or (isinstance(prob_val, float) and math.isnan(prob_val))
+    )
+    if is_prob_unavailable:
+        reason = c_view.get("fallback_reason") or "Model probability unavailable"
+        return (
+            "error",
+            (
+                f"⚠️ **Risk Probability Unavailable:** {reason}. "
+                "Strategy has safely fallen back to Fixed Baseline allocation."
+            ),
+        )
+    if c_view.get("allocation", {}).get("strategy_mode") == "Fixed Baseline (Fallback)":
+        return (
+            "info",
+            (
+                "ℹ️ **Adaptive Policy Fallback:** No adaptive threshold met validation criteria. "
+                "Strategy safely operates on Fixed Baseline allocation."
+            ),
+        )
+    return None
+
+
 def main() -> None:
     st.set_page_config(
         page_title="AI Investment Risk Radar",
@@ -226,22 +259,13 @@ def main() -> None:
             f"is {c_view['staleness_sessions']} session(s) behind market close."
         )
 
-    prob_val = c_view.get("probability")
-    is_prob_unavailable = (
-        c_view.get("probability_status") == "unavailable"
-        or prob_val is None
-        or (isinstance(prob_val, float) and math.isnan(prob_val))
-    )
-    if is_prob_unavailable:
-        st.error(
-            f"⚠️ **Risk Probability Unavailable:** {c_view.get('fallback_reason', 'Model probability unavailable')}. "
-            "Strategy has safely fallen back to Fixed Baseline allocation."
-        )
-    elif c_view.get("allocation", {}).get("strategy_mode") == "Fixed Baseline (Fallback)":
-        st.info(
-            "ℹ️ **Adaptive Policy Fallback:** No adaptive threshold met validation criteria. "
-            "Strategy safely operates on Fixed Baseline allocation."
-        )
+    banner = resolve_fallback_banner(c_view)
+    if banner is not None:
+        b_type, b_msg = banner
+        if b_type == "error":
+            st.error(b_msg)
+        else:
+            st.info(b_msg)
 
     # Common Compact View Content
     st.markdown("---")

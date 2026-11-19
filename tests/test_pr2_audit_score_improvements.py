@@ -348,21 +348,8 @@ def test_notebook_all_cells_execute_in_fixture_mode(monkeypatch, tmp_path: Path)
 
 
 def test_app_fallback_banner_distinguishes_missing_prob_vs_policy():
-    """Verify fallback banner logic treats missing/NaN probability as unavailable probability warning."""
-    import math
-
-    def evaluate_banner_mode(c_view: dict) -> str:
-        prob_val = c_view.get("probability")
-        is_prob_unavailable = (
-            c_view.get("probability_status") == "unavailable"
-            or prob_val is None
-            or (isinstance(prob_val, float) and math.isnan(prob_val))
-        )
-        if is_prob_unavailable:
-            return "unavailable_probability_error"
-        if c_view.get("allocation", {}).get("strategy_mode") == "Fixed Baseline (Fallback)":
-            return "adaptive_policy_info"
-        return "normal"
+    """Verify resolve_fallback_banner in app.py treats missing/NaN probability as unavailable error."""
+    from app import resolve_fallback_banner
 
     # Case 1: probability is None despite calibrated status -> should trigger unavailable error
     view_none_prob = {
@@ -370,15 +357,25 @@ def test_app_fallback_banner_distinguishes_missing_prob_vs_policy():
         "probability": None,
         "allocation": {"strategy_mode": "Fixed Baseline (Fallback)"},
     }
-    assert evaluate_banner_mode(view_none_prob) == "unavailable_probability_error"
+    banner = resolve_fallback_banner(view_none_prob)
+    assert banner is not None
+    assert banner[0] == "error"
+    assert "Risk Probability Unavailable" in banner[1]
+    assert "Model probability unavailable" in banner[1]
 
     # Case 2: probability is NaN -> should trigger unavailable error
     view_nan_prob = {
         "probability_status": "calibrated",
         "probability": float("nan"),
+        "fallback_reason": None,
         "allocation": {"strategy_mode": "Fixed Baseline (Fallback)"},
     }
-    assert evaluate_banner_mode(view_nan_prob) == "unavailable_probability_error"
+    banner = resolve_fallback_banner(view_nan_prob)
+    assert banner is not None
+    assert banner[0] == "error"
+    assert "Risk Probability Unavailable" in banner[1]
+    assert "None" not in banner[1]
+    assert "Model probability unavailable" in banner[1]
 
     # Case 3: valid probability, but policy fallback -> should trigger adaptive policy info
     view_valid_prob_policy_fallback = {
@@ -386,7 +383,11 @@ def test_app_fallback_banner_distinguishes_missing_prob_vs_policy():
         "probability": 0.15,
         "allocation": {"strategy_mode": "Fixed Baseline (Fallback)"},
     }
-    assert evaluate_banner_mode(view_valid_prob_policy_fallback) == "adaptive_policy_info"
+    banner = resolve_fallback_banner(view_valid_prob_policy_fallback)
+    assert banner is not None
+    assert banner[0] == "info"
+    assert "Adaptive Policy Fallback" in banner[1]
+
 
 
 
