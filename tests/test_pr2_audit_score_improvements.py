@@ -347,3 +347,46 @@ def test_notebook_all_cells_execute_in_fixture_mode(monkeypatch, tmp_path: Path)
     assert len(scope["schedule_df"]) == 4
 
 
+def test_app_fallback_banner_distinguishes_missing_prob_vs_policy():
+    """Verify fallback banner logic treats missing/NaN probability as unavailable probability warning."""
+    import math
+
+    def evaluate_banner_mode(c_view: dict) -> str:
+        prob_val = c_view.get("probability")
+        is_prob_unavailable = (
+            c_view.get("probability_status") == "unavailable"
+            or prob_val is None
+            or (isinstance(prob_val, float) and math.isnan(prob_val))
+        )
+        if is_prob_unavailable:
+            return "unavailable_probability_error"
+        if c_view.get("allocation", {}).get("strategy_mode") == "Fixed Baseline (Fallback)":
+            return "adaptive_policy_info"
+        return "normal"
+
+    # Case 1: probability is None despite calibrated status -> should trigger unavailable error
+    view_none_prob = {
+        "probability_status": "calibrated",
+        "probability": None,
+        "allocation": {"strategy_mode": "Fixed Baseline (Fallback)"},
+    }
+    assert evaluate_banner_mode(view_none_prob) == "unavailable_probability_error"
+
+    # Case 2: probability is NaN -> should trigger unavailable error
+    view_nan_prob = {
+        "probability_status": "calibrated",
+        "probability": float("nan"),
+        "allocation": {"strategy_mode": "Fixed Baseline (Fallback)"},
+    }
+    assert evaluate_banner_mode(view_nan_prob) == "unavailable_probability_error"
+
+    # Case 3: valid probability, but policy fallback -> should trigger adaptive policy info
+    view_valid_prob_policy_fallback = {
+        "probability_status": "calibrated",
+        "probability": 0.15,
+        "allocation": {"strategy_mode": "Fixed Baseline (Fallback)"},
+    }
+    assert evaluate_banner_mode(view_valid_prob_policy_fallback) == "adaptive_policy_info"
+
+
+

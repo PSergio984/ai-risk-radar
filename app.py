@@ -226,9 +226,15 @@ def main() -> None:
             f"is {c_view['staleness_sessions']} session(s) behind market close."
         )
 
-    if c_view["probability_status"] == "unavailable":
+    prob_val = c_view.get("probability")
+    is_prob_unavailable = (
+        c_view.get("probability_status") == "unavailable"
+        or prob_val is None
+        or (isinstance(prob_val, float) and math.isnan(prob_val))
+    )
+    if is_prob_unavailable:
         st.error(
-            f"⚠️ **Risk Probability Unavailable:** {c_view['fallback_reason']}. "
+            f"⚠️ **Risk Probability Unavailable:** {c_view.get('fallback_reason', 'Model probability unavailable')}. "
             "Strategy has safely fallen back to Fixed Baseline allocation."
         )
     elif c_view.get("allocation", {}).get("strategy_mode") == "Fixed Baseline (Fallback)":

@@ -17,7 +17,7 @@ def compute_regime_analysis(
     df = features.frame
     target_col = features.target_columns[0]
 
-    # 1. Honest partition metrics (Train, Calibration, Validation)
+    # 1. Partition metrics: train and calibration are in-sample, validation is out-of-sample
     partition_metrics: dict[str, Any] = {}
     for part_name, sessions in [
         ("train", splits.train),
