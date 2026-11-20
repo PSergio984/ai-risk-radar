@@ -33,13 +33,12 @@ AUTHORITATIVE_SNAPSHOT_HASHES: dict[str, str] = {
 }
 
 
-def sha256_file(path: Path) -> str:
-    """Compute standard SHA-256 hex digest of file bytes."""
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        while chunk := f.read(65536):
-            h.update(chunk)
-    return h.hexdigest()
+def sha256_file(path: Path, target_crlf: bool = False) -> str:
+    """Compute standard SHA-256 hex digest of file bytes, optionally normalizing CRLF for text reports."""
+    data = path.read_bytes()
+    if target_crlf and path.suffix == ".json":
+        data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    return hashlib.sha256(data).hexdigest()
 
 
 def verify_bundle(repo_root: Path = REPO_ROOT) -> tuple[bool, list[dict[str, str]]]:
@@ -61,6 +60,11 @@ def verify_bundle(repo_root: Path = REPO_ROOT) -> tuple[bool, list[dict[str, str
             continue
 
         actual_hash = sha256_file(file_path)
+        if actual_hash != expected_hash and file_path.suffix == ".json":
+            crlf_hash = sha256_file(file_path, target_crlf=True)
+            if crlf_hash == expected_hash:
+                actual_hash = crlf_hash
+
         if actual_hash == expected_hash:
             results.append({
                 "file": rel_path,

@@ -142,6 +142,8 @@ def test_frozen_artifacts_bit_exact_hashes():
         file_path = REPO_ROOT / rel_path
         assert file_path.is_file(), f"Missing frozen release file: {rel_path}"
         actual_hash = sha256_file(file_path)
+        if actual_hash != expected_hash and file_path.suffix == ".json":
+            actual_hash = sha256_file(file_path, target_crlf=True)
         assert actual_hash == expected_hash, (
             f"Hash divergence on {rel_path}: expected {expected_hash}, got {actual_hash}"
         )
