@@ -36,11 +36,13 @@ COPY requirements.txt pyproject.toml /app/
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
 
-# Copy application source code, evaluation artifacts, and test suite
+# Copy application source code, evaluation artifacts, configuration, and test suite
 COPY ai_risk_radar/ /app/ai_risk_radar/
 COPY artifacts/ /app/artifacts/
+COPY config/ /app/config/
+COPY notebooks/ /app/notebooks/
 COPY tests/ /app/tests/
-COPY app.py config.json /app/
+COPY app.py config.json Dockerfile docker-compose.yml pyproject.toml /app/
 COPY scripts/ /app/scripts/
 COPY docker/entrypoint.sh /app/docker/entrypoint.sh
 
