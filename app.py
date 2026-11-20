@@ -104,6 +104,7 @@ def load_report_data() -> tuple[Report | None, str | None]:
     final_test_path = artifacts_dir / "final_test_report.json"
     repro_test_path = artifacts_dir / "reproduction_test_report.json"
     research_path = artifacts_dir / "research_report.json"
+    fixture_path = artifacts_dir / "fixture_report.json"
 
     primary_path = None
     if latest_path.exists():
@@ -114,6 +115,8 @@ def load_report_data() -> tuple[Report | None, str | None]:
         primary_path = final_test_path
     elif research_path.exists():
         primary_path = research_path
+    elif fixture_path.exists():
+        primary_path = fixture_path
 
     if not primary_path:
         return None, None

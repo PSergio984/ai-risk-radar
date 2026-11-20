@@ -1,0 +1,12 @@
+[Unit]
+Description=AI Investment Risk Radar Post-Market Refresh Timer
+Documentation=https://github.com/PSergio984/ai-risk-radar
+
+[Timer]
+# Trigger Monday through Friday at 16:30 US Eastern (post-NYSE close)
+OnCalendar=Mon..Fri 16:30:00 America/New_York
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

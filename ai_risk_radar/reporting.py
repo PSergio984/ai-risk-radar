@@ -190,6 +190,8 @@ def build_report(
         "limitations": limitations,
     }
     for f_key in (
+        "is_synthetic",
+        "disclaimer",
         "reproduction_status",
         "original_evaluated_at",
         "metric_convention",

@@ -1,0 +1,57 @@
+{
+  "identity": {
+    "name": "AI Investment Risk Radar",
+    "version": "0.1.0",
+    "pipeline_mode": "latest",
+    "timestamp": "2026-11-17T22:26:12.805169",
+    "release_hash": "f805f206803067139f8c52099273bf9e80ca53ec64b10aed270daabebbcfe113"
+  },
+  "data_status": {
+    "source": "yfinance",
+    "cutoff_session": "2026-11-16",
+    "as_of_session": "2026-11-16",
+    "staleness_sessions": 1,
+    "refresh_status": "ok"
+  },
+  "forecast": {
+    "as_of_session": "2026-11-16",
+    "horizon_sessions": 20,
+    "loss_threshold": -0.05,
+    "loss_definition": "Estimated probability of 50% SOXX / 50% XLK reference basket total return <= -5.0% over next 20 trading sessions",
+    "probability": 0.45420435881410676,
+    "probability_status": "calibrated",
+    "fallback_reason": "Calibration support adequate",
+    "raw_probability": 0.45420435881410676,
+    "risk_level": "High",
+    "feature_explanation": [
+      "63-session peak-to-trough drawdown in AI reference basket measured.",
+      "Realized 20-session volatility in SOXX and XLK incorporated into risk estimate.",
+      "Relative strength difference between technology sector and broad S&P 500."
+    ]
+  },
+  "allocation": {
+    "strategy_mode": "Growth",
+    "selected_threshold": 0.5,
+    "weights": {
+      "SOXX": 0.35,
+      "XLK": 0.35,
+      "SPY": 0.2,
+      "SHY": 0.1
+    },
+    "trade_required": 1,
+    "trade_description": "Risk estimate (45.4%) < threshold (50.0%); maintaining Growth exposure."
+  },
+  "performance": {
+    "evaluation_partition": "validation",
+    "selected_strategy": null
+  },
+  "comparisons": {},
+  "diagnostics": {},
+  "limitations": [
+    "Proxy limitations: SOXX and XLK represent semiconductor hardware and large-cap tech, not pure AI exposure.",
+    "Execution realism: rebalance decisions on week's last session execute at next trading session close with 10 bps transaction cost.",
+    "Holding drift: asset weights drift between rebalances as market prices change.",
+    "Zero risk-free Sharpe convention: Sharpe ratios assume 0.0% risk-free rate strictly per project specification.",
+    "Temporal overlap: 20-trading-day forecast horizons overlap, so daily observations are not statistically independent."
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "release_version": "1.0.0",
+  "hashes": {
+    "model": "f805f206803067139f8c52099273bf9e80ca53ec64b10aed270daabebbcfe113",
+    "data": "b476eaff931e68f4ece308cd64e860928860925a6a59358269c29fbeb4df4974"
+  },
+  "model_file": "artifacts\\models\\random_forest.joblib",
+  "selected_strategy": "threshold_0.50",
+  "selected_threshold": 0.5,
+  "probability_status": "calibrated",
+  "fallback_reason": "Calibration support adequate",
+  "boundaries": {
+    "train_start": "2016-01-04",
+    "train_end": "2021-11-18",
+    "calibration_start": "2021-11-18",
+    "calibration_end": "2022-11-18",
+    "validation_start": "2022-11-18",
+    "validation_end": "2024-11-18",
+    "test_start": "2024-11-18",
+    "test_end": "2026-11-16",
+    "cutoff": "2026-11-16"
+  },
+  "validation_metrics": {
+    "total_return": 0.6952689930121523,
+    "cagr": 0.31932039104563437,
+    "max_drawdown": -0.16364131616928157,
+    "annualized_volatility": 0.2002072637693262,
+    "sharpe": 1.4794220050964575,
+    "turnover": 4.833751855532823,
+    "defensive_occupancy": 0.0498960498960499,
+    "total_cost": 108.35109122364884
+  },
+  "test_evaluation": {
+    "evaluated_at": "2026-11-17T22:25:54.808589",
+    "test_metrics": {
+      "total_return": 0.5529049846184143,
+      "cagr": 0.24890694795198343,
+      "max_drawdown": -0.24822293036746612,
+      "annualized_volatility": 0.2786722740393957,
+      "sharpe": 0.9336090550279496,
+      "turnover": 2.151763552303652,
+      "defensive_occupancy": 0.008,
+      "total_cost": 53.78203304037834
+    }
+  }
+}

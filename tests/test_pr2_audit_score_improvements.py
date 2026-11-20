@@ -347,6 +347,26 @@ def test_notebook_all_cells_execute_in_fixture_mode(monkeypatch, tmp_path: Path)
     assert len(scope["schedule_df"]) == 4
 
 
+def test_research_notebook_all_cells_execute_and_have_saved_outputs(monkeypatch):
+    """Assert all research.ipynb code cells have saved outputs and execute cleanly in fixture mode."""
+    monkeypatch.setenv("AI_RISK_RADAR_NOTEBOOK_MODE", "fixture")
+    nb = json.loads((REPO_ROOT / "notebooks" / "research.ipynb").read_text(encoding="utf-8"))
+    code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
+    assert len(code_cells) >= 5
+    for c in code_cells:
+        assert len(c.get("outputs", [])) > 0, "Research notebook code cell missing saved outputs"
+
+    scope = {"__name__": "__main__"}
+    for idx, cell in enumerate(code_cells):
+        code = "".join(cell["source"])
+        exec(compile(code, f"research_cell_{idx}.py", "exec"), scope)  # noqa: S102
+
+    assert "bundle" in scope
+    assert "features" in scope
+    assert "splits" in scope
+    assert "corr" in scope
+
+
 def test_app_fallback_banner_distinguishes_missing_prob_vs_policy():
     """Verify resolve_fallback_banner in app.py treats missing/NaN probability as unavailable error."""
     from app import resolve_fallback_banner
@@ -387,6 +407,221 @@ def test_app_fallback_banner_distinguishes_missing_prob_vs_policy():
     assert banner is not None
     assert banner[0] == "info"
     assert "Adaptive Policy Fallback" in banner[1]
+
+
+def test_run_latest_cache_truncates_future_rows_and_enforces_as_of_cutoff(tmp_path: Path):
+    """Verify run_latest with data_mode='cache' truncates future rows before feature building and prediction."""
+    import dataclasses
+
+    from ai_risk_radar.contracts import DataBundle, ModelBundle
+    from ai_risk_radar.data import save_snapshot
+    from ai_risk_radar.features import build_features
+    from ai_risk_radar.models import ConstantPredictor
+    from ai_risk_radar.pipeline import _compute_policy_hash, _compute_sha256, run_latest
+
+    settings = load_settings("config.json")
+    test_settings = dataclasses.replace(
+        settings,
+        raw_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+    )
+
+    cal = xcals.get_calendar("XNYS")
+    sessions = cal.sessions_in_range("2025-01-02", "2025-05-30")
+    rng = np.random.default_rng(42)
+    prices = pd.DataFrame(
+        100.0 * np.cumprod(1.0 + rng.normal(0, 0.01, (len(sessions), len(test_settings.tickers))), axis=0),
+        index=sessions,
+        columns=list(test_settings.tickers),
+    )
+    bundle = DataBundle(
+        adjusted_close=prices,
+        volume=prices * 1000.0,
+        sessions=sessions,
+        manifest={"source": "mock_test_cache", "cutoff_session": "2025-05-30"},
+    )
+    save_snapshot(bundle, test_settings.raw_dir / "snapshot")
+
+    features = build_features(bundle, test_settings)
+    model = ModelBundle(
+        estimator=ConstantPredictor(0.25),
+        calibrator=None,
+        feature_columns=features.feature_columns,
+        metadata={"probability_status": "calibrated"},
+    )
+    models_dir = test_settings.artifacts_dir / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    model_path = models_dir / "random_forest.joblib"
+    joblib.dump(model, model_path)
+
+    release_payload = {
+        "hashes": {
+            "model": _compute_sha256(model_path),
+            "policy": _compute_policy_hash(0.35, test_settings),
+            "data": _compute_sha256(test_settings.raw_dir / "snapshot" / "manifest.json"),
+        },
+        "selected_threshold": 0.35,
+    }
+    release_path = test_settings.artifacts_dir / "release.json"
+    release_path.write_text(json.dumps(release_payload, indent=2), encoding="utf-8")
+
+    # Run latest with as_of='2025-04-30' on a cache extending through 2025-05-30
+    report_path = run_latest(release_path, settings=test_settings, as_of="2025-04-30", data_mode="cache")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    # Assert cutoff session is enforced, no future rows are used, and staleness is 0
+    assert report["data_status"]["as_of_session"] == "2025-04-30"
+    assert report["data_status"]["cutoff_session"] == "2025-04-30"
+    assert report["data_status"]["staleness_sessions"] == 0
+    assert report["forecast"]["as_of_session"] == "2025-04-30"
+
+    # Verify that as_of earlier than all sessions raises ValueError
+    with pytest.raises(ValueError, match="No price data available on or before cutoff session"):
+        run_latest(release_path, settings=test_settings, as_of="2024-01-01", data_mode="cache")
+
+
+def test_format_threshold_key_adjacent_floats_and_validation():
+    """Verify format_threshold_key preserves float identity without collision and rejects invalid inputs."""
+    # Historical release compatibility
+    assert format_threshold_key(0.35) == "threshold_0.35"
+    assert format_threshold_key(0.20) == "threshold_0.20"
+    assert format_threshold_key(0.50) == "threshold_0.50"
+
+    # Exact float identity and round-trip parsing
+    k1 = format_threshold_key(0.3500001)
+    k2 = format_threshold_key(0.3500002)
+    assert k1 != k2
+    assert parse_threshold_key(k1) == 0.3500001
+    assert parse_threshold_key(k2) == 0.3500002
+
+    # Validation rejection for nonfinite or invalid inputs
+    for invalid_val in [float("nan"), float("inf"), float("-inf"), None, "0.35"]:
+        with pytest.raises(ValueError, match="Invalid threshold value"):
+            format_threshold_key(invalid_val)  # type: ignore[arg-type]
+
+
+def test_validate_sessions_and_prices_and_save_snapshot_reject_inf_nan(tmp_path: Path):
+    """Verify validate_sessions_and_prices and save_snapshot strictly reject positive/negative infinity."""
+    from ai_risk_radar.contracts import DataBundle
+    from ai_risk_radar.data import save_snapshot, validate_sessions_and_prices
+
+    cal = xcals.get_calendar("XNYS")
+    sessions = cal.sessions_in_range("2025-01-02", "2025-01-10")
+    prices = pd.DataFrame(
+        100.0,
+        index=sessions,
+        columns=["SOXX", "XLK", "SPY", "SHY"],
+    )
+    volume = prices * 100.0
+
+    # Clean data passes
+    validate_sessions_and_prices(prices, volume, sessions)
+
+    # Positive infinity in prices
+    inf_prices = prices.copy()
+    inf_prices.iloc[-1, 0] = float("inf")
+    with pytest.raises(ValueError, match="Non-finite price"):
+        validate_sessions_and_prices(inf_prices, volume, sessions)
+
+    inf_bundle = DataBundle(inf_prices, volume, sessions, {"source": "test"})
+    with pytest.raises(ValueError, match="Non-finite price"):
+        save_snapshot(inf_bundle, tmp_path / "inf_snapshot")
+
+    # Negative infinity in volume
+    inf_vol = volume.copy()
+    inf_vol.iloc[-1, 0] = float("inf")
+    with pytest.raises(ValueError, match="Non-finite volume"):
+        validate_sessions_and_prices(prices, inf_vol, sessions)
+
+
+def test_notebook_cell13_unavailable_probability_and_weekly_timing():
+    """Verify notebook cell 13 suppresses numeric probability on unavailable status and respects weekly schedule."""
+    import contextlib
+    import io
+
+    from ai_risk_radar.contracts import DataBundle, ModelBundle
+    from ai_risk_radar.models import ConstantPredictor
+
+    settings = load_settings("config.json")
+    cell_code = "".join(
+        json.loads(Path("notebooks/end_to_end.ipynb").read_text(encoding="utf-8"))["cells"][13]["source"]
+    )
+
+    # Test Case 1: Mid-week cutoff (Wednesday 2025-05-28) with unavailable probability
+    idx_midweek = pd.DatetimeIndex(["2025-05-28"])
+    df_midweek = pd.DataFrame({"dummy": [1.0]}, index=idx_midweek)
+    prices_midweek = pd.DataFrame([[100.0] * 4], index=idx_midweek, columns=settings.tickers)
+    bundle_midweek = DataBundle(prices_midweek, prices_midweek, idx_midweek, {"source": "test"})
+    rf_bundle_unavail = ModelBundle(
+        ConstantPredictor(0.8),
+        None,
+        ("dummy",),
+        {"probability_status": "unavailable", "reason": "Training data has only one class; probability unavailable"},
+    )
+
+    scope: dict[str, object] = {
+        "settings": settings,
+        "df": df_midweek,
+        "bundle": bundle_midweek,
+        "rf_bundle": rf_bundle_unavail,
+        "selected_threshold": None,
+        "pd": pd,
+        "predict_risk": predict_risk,
+        "xcals": xcals,
+    }
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        exec(compile(cell_code, "cell13_midweek.py", "exec"), scope)  # noqa: S102
+
+    output = buf.getvalue()
+    # Downside Risk Probability must be Unavailable, not 80.0%
+    assert "Unavailable (Training data has only one class; probability unavailable)" in output
+    assert "80.0%" not in output
+    assert "Risk Classification Level:          Unavailable" in output
+    assert "Active Portfolio Policy Stance:     Defensive Baseline Fallback" in output
+    # Scheduled Execution must be the following Monday 2025-06-02, not Thursday 2025-05-29
+    assert "2025-06-02 (at Market Close" in output
+    assert "2025-05-29" not in output
+    # No immediate rebalance during unfinished week: total turnover must be 0
+    assert "Total Gross Trade Volume:           $0.00" in output
+    assert "Estimated Rebalance Cost (10 bps):  $0.00" in output
+
+    # Test Case 2: Week-final session (Friday 2025-05-30) with calibrated probability
+    idx_friday = pd.DatetimeIndex(["2025-05-30"])
+    df_friday = pd.DataFrame({"dummy": [1.0]}, index=idx_friday)
+    prices_friday = pd.DataFrame([[100.0] * 4], index=idx_friday, columns=settings.tickers)
+    bundle_friday = DataBundle(prices_friday, prices_friday, idx_friday, {"source": "test"})
+    rf_bundle_calibrated = ModelBundle(
+        ConstantPredictor(0.40),
+        None,
+        ("dummy",),
+        {"probability_status": "calibrated"},
+    )
+
+    scope_friday: dict[str, object] = {
+        "settings": settings,
+        "df": df_friday,
+        "bundle": bundle_friday,
+        "rf_bundle": rf_bundle_calibrated,
+        "selected_threshold": 0.35,
+        "pd": pd,
+        "predict_risk": predict_risk,
+        "xcals": xcals,
+    }
+
+    buf_friday = io.StringIO()
+    with contextlib.redirect_stdout(buf_friday):
+        exec(compile(cell_code, "cell13_friday.py", "exec"), scope_friday)  # noqa: S102
+
+    output_friday = buf_friday.getvalue()
+    assert "Downside Risk Probability (20-day): 40.0%" in output_friday
+    assert "Risk Classification Level:          High" in output_friday
+    assert "Active Portfolio Policy Stance:     Defensive" in output_friday
+    assert "Scheduled Execution Session:        2025-06-02 (at Market Close)" in output_friday
+    assert "Total Gross Trade Volume:           $3,000.00" in output_friday
+    assert "Estimated Rebalance Cost (10 bps):  $3.00" in output_friday
+
 
 
 

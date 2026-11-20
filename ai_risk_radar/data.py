@@ -43,11 +43,36 @@ def validate_sessions_and_prices(
             raise ValueError(
                 f"Missing exchange session for {col} on {first_nan_date.strftime('%Y-%m-%d')}"
             )
+        inf_mask = ~np.isfinite(series)
+        if inf_mask.any():
+            first_inf_date = adjusted_close.index[inf_mask][0]
+            raise ValueError(
+                f"Non-finite price for {col} on {first_inf_date.strftime('%Y-%m-%d')}"
+            )
         nonpos_mask = series <= 0.0
         if nonpos_mask.any():
             first_nonpos_date = adjusted_close.index[nonpos_mask][0]
             raise ValueError(
                 f"Nonpositive price for {col} on {first_nonpos_date.strftime('%Y-%m-%d')}"
+            )
+
+    for col in volume.columns:
+        vol_series = volume[col]
+        if vol_series.isna().any():
+            first_nan = volume.index[vol_series.isna()][0]
+            raise ValueError(
+                f"Missing exchange session volume for {col} on {first_nan.strftime('%Y-%m-%d')}"
+            )
+        nonfinite_vol = ~np.isfinite(vol_series)
+        if nonfinite_vol.any():
+            first_inf = volume.index[nonfinite_vol][0]
+            raise ValueError(
+                f"Non-finite volume for {col} on {first_inf.strftime('%Y-%m-%d')}"
+            )
+        if (vol_series < 0.0).any():
+            first_neg = volume.index[vol_series < 0.0][0]
+            raise ValueError(
+                f"Negative volume for {col} on {first_neg.strftime('%Y-%m-%d')}"
             )
 
     if expected_sessions is not None:
@@ -62,6 +87,7 @@ def validate_sessions_and_prices(
 
 def save_snapshot(bundle: DataBundle, path: Path | str) -> Path:
     """Persist a DataBundle to parquet files and generate a hashed manifest."""
+    validate_sessions_and_prices(bundle.adjusted_close, bundle.volume)
     snapshot_dir = Path(path)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 

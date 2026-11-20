@@ -1,0 +1,52 @@
+{
+  "provenance": {
+    "correction_reason": "AGY-3: Evaluates capital return and CAGR from contributed initial capital ($10,000.00) rather than post-funding equity ($9,990.01), accounting for initial funding friction.",
+    "model_file": "artifacts/models/random_forest.joblib",
+    "data_snapshot": "data/raw/snapshot/manifest.json",
+    "test_sessions": 500,
+    "test_start": "2024-11-18",
+    "test_end": "2026-11-16"
+  },
+  "metrics": {
+    "selected_strategy": {
+      "total_return": 0.551353630987427,
+      "cagr": 0.24827671164604204,
+      "max_drawdown": -0.24822293036746612,
+      "annualized_volatility": 0.2786722740393957,
+      "sharpe": 0.9336090550279496,
+      "turnover": 2.151763552303652,
+      "defensive_occupancy": 0.008,
+      "total_cost": 53.78203304037834
+    },
+    "growth_buy_and_hold": {
+      "total_return": 0.5712037753059512,
+      "cagr": 0.2563174318745791,
+      "max_drawdown": -0.25564639967367214,
+      "annualized_volatility": 0.3017391524646681,
+      "sharpe": 0.9060114817765212,
+      "turnover": 0.5045055145255546,
+      "defensive_occupancy": 0.0,
+      "total_cost": 9.99000999000964
+    },
+    "fixed_defensive_weekly": {
+      "total_return": 0.36805610945288536,
+      "cagr": 0.1714771939447528,
+      "max_drawdown": -0.15788263104984301,
+      "annualized_volatility": 0.1718369197328614,
+      "sharpe": 1.0052156639380325,
+      "turnover": 1.3538629149466404,
+      "defensive_occupancy": 1.0,
+      "total_cost": 30.514979948446125
+    },
+    "momentum_63": {
+      "total_return": 0.426324352081273,
+      "cagr": 0.19641482362283824,
+      "max_drawdown": -0.2196191609783296,
+      "annualized_volatility": 0.22939724724457755,
+      "sharpe": 0.8952946500828147,
+      "turnover": 8.841427429104506,
+      "defensive_occupancy": 0.28,
+      "total_cost": 197.98521511964645
+    }
+  }
+}

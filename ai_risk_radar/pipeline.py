@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import shutil
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import joblib
 import pandas as pd
 
 from ai_risk_radar.config import load_settings
-from ai_risk_radar.contracts import Settings
+from ai_risk_radar.contracts import DataBundle, Settings
 from ai_risk_radar.data import (
     fetch_prices,
     load_snapshot,
@@ -66,11 +67,12 @@ def _compute_release_hash(model_hash: str, data_hash: str, policy_hash: str) -> 
 
 def format_threshold_key(th: float) -> str:
     """Format threshold key preserving exact float precision without collision."""
+    if th is None or not isinstance(th, (int, float)) or math.isnan(th) or math.isinf(th):
+        raise ValueError(f"Invalid threshold value: {th}")
     val_2d = f"{float(th):.2f}"
-    if abs(float(val_2d) - float(th)) < 1e-9:
+    if float(val_2d) == float(th):
         return f"threshold_{val_2d}"
-    s = f"{float(th):.6f}".rstrip("0").rstrip(".")
-    return f"threshold_{s}"
+    return f"threshold_{float(th)!r}"
 
 
 def parse_threshold_key(key: str) -> float | None:
@@ -757,6 +759,10 @@ def run_latest(
     snapshot_dir = Path(settings.raw_dir) / "snapshot"
     latest_dir = Path(settings.raw_dir) / "latest"
 
+    cal = xcals.get_calendar("XNYS")
+    now_ny = pd.Timestamp.now(tz="UTC").tz_convert("America/New_York")
+    target_cutoff = resolve_last_completed_session(cal, as_of if as_of is not None else now_ny)
+
     if data_mode == "refresh":
         latest_dir.mkdir(parents=True, exist_ok=True)
         existing_bundle = None
@@ -764,7 +770,7 @@ def run_latest(
             existing_bundle = load_snapshot(latest_dir)
         elif (snapshot_dir / "manifest.json").is_file():
             existing_bundle = load_snapshot(snapshot_dir)
-        bundle = fetch_prices(settings, as_of=as_of, existing_bundle=existing_bundle)
+        bundle = fetch_prices(settings, as_of=target_cutoff, existing_bundle=existing_bundle)
         save_snapshot(bundle, latest_dir)
         active_data_dir = latest_dir
     else:
@@ -775,6 +781,23 @@ def run_latest(
             bundle = load_snapshot(snapshot_dir)
             active_data_dir = snapshot_dir
 
+    # Resolve completed cutoff and truncate later rows BEFORE features and prediction
+    valid_mask = bundle.adjusted_close.index <= target_cutoff
+    if not valid_mask.any():
+        raise ValueError(
+            f"No price data available on or before cutoff session {target_cutoff.strftime('%Y-%m-%d')}"
+        )
+    if not valid_mask.all():
+        truncated_close = bundle.adjusted_close.loc[valid_mask]
+        truncated_volume = bundle.volume.loc[valid_mask]
+        truncated_sessions = bundle.sessions[bundle.sessions <= target_cutoff]
+        bundle = DataBundle(
+            adjusted_close=truncated_close,
+            volume=truncated_volume,
+            sessions=truncated_sessions,
+            manifest=dict(bundle.manifest),
+        )
+
     # Reject synthetic bundle before prediction
     if bundle.manifest.get("is_synthetic") or bundle.manifest.get("source") == "deterministic_offline_fixture":
         raise ValueError("Synthetic cache cannot be used for latest production prediction")
@@ -784,14 +807,11 @@ def run_latest(
     latest_risk = predict_risk(rf_bundle, latest_frame)
 
     as_of_session = feat_set.frame.index[-1]
-    now_ny = pd.Timestamp.now(tz="UTC").tz_convert("America/New_York")
-    cal = xcals.get_calendar("XNYS")
-    last_completed = resolve_last_completed_session(cal, as_of if as_of is not None else now_ny)
     as_of_session_ts = pd.Timestamp(as_of_session)
-    if as_of_session_ts >= last_completed:
+    if as_of_session_ts >= target_cutoff:
         staleness = 0
     else:
-        intervening = cal.sessions_in_range(as_of_session_ts, last_completed)
+        intervening = cal.sessions_in_range(as_of_session_ts, target_cutoff)
         staleness = max(0, len(intervening) - 1)
 
     selected_threshold = release_data.get("selected_threshold")
@@ -832,7 +852,8 @@ def run_latest(
         "selected_threshold": selected_threshold,
         "model_hash": actual_model_hash,
         "release_hash": compound_release_hash,
-        "cutoff_session": as_of_session.strftime("%Y-%m-%d"),
+        "cutoff_session": target_cutoff.strftime("%Y-%m-%d"),
+        "as_of_session": as_of_session.strftime("%Y-%m-%d"),
         "staleness_sessions": staleness,
         "source": bundle.manifest.get("source", "yfinance"),
         "refresh_status": "refreshed" if data_mode == "refresh" else "cached",
