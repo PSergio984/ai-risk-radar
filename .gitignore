@@ -14,7 +14,8 @@ env/
 # Data and Artifacts (must not be committed)
 data/raw/
 data/processed/
-artifacts/
+artifacts/models/
+artifacts/fixture_report.json
 *.parquet
 *.pkl
 *.joblib
@@ -40,3 +41,4 @@ dist/
 # Scratch & build workspace remnants
 .scratch/
 final-project/
+logs/

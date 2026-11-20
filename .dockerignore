@@ -1,0 +1,40 @@
+# Git and Version Control
+.git/
+.gitignore
+.gitattributes
+
+# Python Virtual Environments & Bytecode
+.venv*/
+venv*/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Testing and Linters
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local Scratch, Logs, and Editor
+.scratch/
+scratch/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Package locks and unneeded repo docs
+uv.lock
+docs/
+
+# Ignored data and local model artifacts (guarantees clean-checkout build isolation)
+data/
+artifacts/models/
+artifacts/fixture_report.json
+*.parquet
+*.joblib
+*.pkl

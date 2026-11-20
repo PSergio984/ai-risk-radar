@@ -2,15 +2,22 @@
 
 import hashlib
 import json
+import math
 import shutil
 from pathlib import Path
 
+import exchange_calendars as xcals
 import joblib
 import pandas as pd
 
 from ai_risk_radar.config import load_settings
-from ai_risk_radar.contracts import Settings
-from ai_risk_radar.data import fetch_prices, load_snapshot, save_snapshot
+from ai_risk_radar.contracts import DataBundle, Settings
+from ai_risk_radar.data import (
+    fetch_prices,
+    load_snapshot,
+    resolve_last_completed_session,
+    save_snapshot,
+)
 from ai_risk_radar.features import build_features
 from ai_risk_radar.models import classification_report, fit_models, predict_risk
 from ai_risk_radar.provenance import lookup_historical_provenance
@@ -56,6 +63,26 @@ def _compute_release_hash(model_hash: str, data_hash: str, policy_hash: str) -> 
     """Compute compound SHA256 covering model weights, data manifest, and policy configuration."""
     compound = f"{model_hash}:{data_hash}:{policy_hash}"
     return hashlib.sha256(compound.encode("utf-8")).hexdigest()
+
+
+def format_threshold_key(th: float) -> str:
+    """Format threshold key preserving exact float precision without collision."""
+    if th is None or not isinstance(th, (int, float)) or math.isnan(th) or math.isinf(th):
+        raise ValueError(f"Invalid threshold value: {th}")
+    val_2d = f"{float(th):.2f}"
+    if float(val_2d) == float(th):
+        return f"threshold_{val_2d}"
+    return f"threshold_{float(th)!r}"
+
+
+def parse_threshold_key(key: str) -> float | None:
+    """Parse float threshold from strategy key, or None if not a threshold key."""
+    if not isinstance(key, str) or not key.startswith("threshold_"):
+        return None
+    try:
+        return float(key.split("threshold_")[1])
+    except (ValueError, IndexError):
+        return None
 
 
 def run_research(settings: Settings, data_mode: str = "cache") -> Path:
@@ -125,8 +152,10 @@ def run_research(settings: Settings, data_mode: str = "cache") -> Path:
     val_risk = predict_risk(rf_bundle, val_frame)
 
     candidates = {}
+    threshold_by_key: dict[str, float] = {}
     for th in settings.candidate_thresholds:
-        key = f"threshold_{th:.2f}"
+        key = format_threshold_key(th)
+        threshold_by_key[key] = float(th)
         targets = weekly_targets(val_risk, splits.validation, settings, threshold=th)
         res = simulate(val_prices, targets, settings, cost_rate=settings.cost_rate)
         candidates[key] = res
@@ -155,7 +184,7 @@ def run_research(settings: Settings, data_mode: str = "cache") -> Path:
     selected_key = select_strategy(candidates, base_res)
     if selected_key is not None and rf_bundle.metadata.get("probability_status") == "calibrated":
         selected_res = candidates[selected_key]
-        selected_threshold = float(selected_key.split("_")[1])
+        selected_threshold = threshold_by_key.get(selected_key, parse_threshold_key(selected_key))
     else:
         selected_key = "fixed_defensive_weekly"
         selected_res = base_res
@@ -475,6 +504,8 @@ def run_final_test(
     from ai_risk_radar.splits import make_splits
     splits = make_splits(feat_set, settings)
 
+    rf_bundle = joblib.load(model_path)
+
     # For reproduction runs, strictly reject altered partition dates or execution conventions before evaluation
     if is_reproduction:
         for b_key, exp_val in expected_boundaries.items():
@@ -496,13 +527,18 @@ def run_final_test(
                 f"Execution convention mismatch: expected target_threshold={exp_target_threshold}, got {settings.target_threshold}. "
                 "Altered conventions cannot silently reuse a consumed holdout."
             )
-        if settings.random_seed != 42:
+
+        model_seed = getattr(rf_bundle.estimator, "random_state", None)
+        if model_seed is None:
+            exp_seed = int(release_data.get("random_seed", 42))
+        else:
+            exp_seed = int(model_seed)
+
+        if settings.random_seed != exp_seed:
             raise ValueError(
-                f"Execution convention mismatch: expected random_seed=42, got {settings.random_seed}. "
+                f"Execution convention mismatch: expected random_seed={exp_seed}, got {settings.random_seed}. "
                 "Altered conventions cannot silently reuse a consumed holdout."
             )
-
-    rf_bundle = joblib.load(model_path)
 
     test_frame = feat_set.frame.loc[splits.test]
     test_prices = bundle.adjusted_close.loc[splits.test]
@@ -513,7 +549,7 @@ def run_final_test(
 
     candidates = {}
     for th in settings.candidate_thresholds:
-        key = f"threshold_{th:.2f}"
+        key = format_threshold_key(th)
         targets = weekly_targets(test_risk, splits.test, settings, threshold=th)
         res = simulate(test_prices, targets, settings, cost_rate=settings.cost_rate)
         candidates[key] = res
@@ -538,7 +574,7 @@ def run_final_test(
     )
 
     if selected_threshold is not None:
-        strat_key = f"threshold_{selected_threshold:.2f}"
+        strat_key = format_threshold_key(selected_threshold)
         if strat_key in candidates:
             selected_res = candidates[strat_key]
         else:
@@ -700,6 +736,7 @@ def run_latest(
     data_mode: str = "cache",
     config_path: Path | str | None = None,
     settings: Settings | None = None,
+    as_of: pd.Timestamp | str | None = None,
 ) -> Path:
     """Generate latest real-time risk estimate and allocation suggestion using frozen release model."""
     rel_path = Path(release_manifest).resolve()
@@ -722,6 +759,10 @@ def run_latest(
     snapshot_dir = Path(settings.raw_dir) / "snapshot"
     latest_dir = Path(settings.raw_dir) / "latest"
 
+    cal = xcals.get_calendar("XNYS")
+    now_ny = pd.Timestamp.now(tz="UTC").tz_convert("America/New_York")
+    target_cutoff = resolve_last_completed_session(cal, as_of if as_of is not None else now_ny)
+
     if data_mode == "refresh":
         latest_dir.mkdir(parents=True, exist_ok=True)
         existing_bundle = None
@@ -729,7 +770,7 @@ def run_latest(
             existing_bundle = load_snapshot(latest_dir)
         elif (snapshot_dir / "manifest.json").is_file():
             existing_bundle = load_snapshot(snapshot_dir)
-        bundle = fetch_prices(settings, existing_bundle=existing_bundle)
+        bundle = fetch_prices(settings, as_of=target_cutoff, existing_bundle=existing_bundle)
         save_snapshot(bundle, latest_dir)
         active_data_dir = latest_dir
     else:
@@ -740,13 +781,38 @@ def run_latest(
             bundle = load_snapshot(snapshot_dir)
             active_data_dir = snapshot_dir
 
+    # Resolve completed cutoff and truncate later rows BEFORE features and prediction
+    valid_mask = bundle.adjusted_close.index <= target_cutoff
+    if not valid_mask.any():
+        raise ValueError(
+            f"No price data available on or before cutoff session {target_cutoff.strftime('%Y-%m-%d')}"
+        )
+    if not valid_mask.all():
+        truncated_close = bundle.adjusted_close.loc[valid_mask]
+        truncated_volume = bundle.volume.loc[valid_mask]
+        truncated_sessions = bundle.sessions[bundle.sessions <= target_cutoff]
+        bundle = DataBundle(
+            adjusted_close=truncated_close,
+            volume=truncated_volume,
+            sessions=truncated_sessions,
+            manifest=dict(bundle.manifest),
+        )
+
+    # Reject synthetic bundle before prediction
+    if bundle.manifest.get("is_synthetic") or bundle.manifest.get("source") == "deterministic_offline_fixture":
+        raise ValueError("Synthetic cache cannot be used for latest production prediction")
+
     feat_set = build_features(bundle, settings)
     latest_frame = feat_set.frame.iloc[-1:]
     latest_risk = predict_risk(rf_bundle, latest_frame)
 
     as_of_session = feat_set.frame.index[-1]
-    now_ny = pd.Timestamp.now(tz="UTC").tz_convert("America/New_York")
-    staleness = int((now_ny.normalize().tz_localize(None) - as_of_session).days)
+    as_of_session_ts = pd.Timestamp(as_of_session)
+    if as_of_session_ts >= target_cutoff:
+        staleness = 0
+    else:
+        intervening = cal.sessions_in_range(as_of_session_ts, target_cutoff)
+        staleness = max(0, len(intervening) - 1)
 
     selected_threshold = release_data.get("selected_threshold")
     actual_policy_hash = _compute_policy_hash(selected_threshold, settings)
@@ -767,15 +833,16 @@ def run_latest(
     if data_manifest_path.is_file():
         actual_data_hash = _compute_sha256(data_manifest_path)
 
-    if active_data_dir.name == "latest":
-        compound_release_hash = _compute_release_hash(
-            actual_model_hash, actual_data_hash, actual_policy_hash
-        )
-    else:
+    expected_data_hash = release_data.get("hashes", {}).get("data")
+    if active_data_dir.name != "latest" and expected_data_hash and actual_data_hash == expected_data_hash:
         compound_release_hash = (
             release_data.get("hashes", {}).get("release")
             or release_data.get("release_hash")
             or _compute_release_hash(actual_model_hash, actual_data_hash, actual_policy_hash)
+        )
+    else:
+        compound_release_hash = _compute_release_hash(
+            actual_model_hash, actual_data_hash, actual_policy_hash
         )
 
     metadata = {
@@ -785,9 +852,11 @@ def run_latest(
         "selected_threshold": selected_threshold,
         "model_hash": actual_model_hash,
         "release_hash": compound_release_hash,
-        "cutoff_session": as_of_session.strftime("%Y-%m-%d"),
+        "cutoff_session": target_cutoff.strftime("%Y-%m-%d"),
+        "as_of_session": as_of_session.strftime("%Y-%m-%d"),
         "staleness_sessions": staleness,
-        "refresh_status": "ok",
+        "source": bundle.manifest.get("source", "yfinance"),
+        "refresh_status": "refreshed" if data_mode == "refresh" else "cached",
         "weights_growth": settings.weights_growth,
         "weights_defensive": settings.weights_defensive,
         "weights_fixed_baseline": settings.weights_fixed_baseline,

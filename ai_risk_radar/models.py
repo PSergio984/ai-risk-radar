@@ -2,7 +2,7 @@
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
 
 from ai_risk_radar.contracts import FeatureSet, ModelBundle, Settings, SplitSet
@@ -195,7 +195,13 @@ def fit_models(
     final_rf.fit(X_train, y_train)
 
     # Sigmoid calibration check and fit on calibration split
-    cal_ok, cal_reason = _check_calibration_support(y_cal, splits.calibration)
+    y_train_unique = np.unique(y_train)
+    if len(y_train_unique) < 2:
+        cal_ok = False
+        cal_reason = f"Training data has only one class ({y_train_unique[0]}); probability unavailable"
+    else:
+        cal_ok, cal_reason = _check_calibration_support(y_cal, splits.calibration)
+
     calibrator = None
     prob_status = "unavailable"
 
@@ -221,6 +227,69 @@ def fit_models(
         },
     )
 
+    # 4. HistGradientBoosting Model Selection (3 expanding purged folds)
+    if len(np.unique(y_train)) < 2:
+        models["hist_gradient_boosting"] = ModelBundle(
+            estimator=ConstantPredictor(float(y_train.iloc[0])),
+            calibrator=None,
+            feature_columns=features.feature_columns,
+            metadata={
+                "model_name": "hist_gradient_boosting",
+                "probability_status": "unavailable",
+                "reason": "Training data has only one class",
+                "fit_sessions": len(splits.train),
+            },
+        )
+    else:
+        hgb_candidates = [2, 3]
+        best_hgb_depth = hgb_candidates[0]
+        best_hgb_brier = float("inf")
+
+        for depth in hgb_candidates:
+            fold_briers = []
+            for tr_s, tr_e, val_s, val_e in folds:
+                fold_tr_idx = splits.train[tr_s:tr_e]
+                fold_val_idx = splits.train[val_s:val_e]
+                y_fold_tr = df.loc[fold_tr_idx, target_col]
+                if len(np.unique(y_fold_tr)) < 2:
+                    p_val = np.full(len(fold_val_idx), float(y_fold_tr.iloc[0]))
+                else:
+                    clf = HistGradientBoostingClassifier(
+                        max_depth=depth,
+                        max_iter=50,
+                        random_state=settings.random_seed,
+                    )
+                    clf.fit(df.loc[fold_tr_idx, feature_cols], y_fold_tr)
+                    if len(clf.classes_) > 1:
+                        p_val = clf.predict_proba(df.loc[fold_val_idx, feature_cols])[:, 1]
+                    else:
+                        p_val = np.full(len(fold_val_idx), float(clf.classes_[0]))
+                fold_briers.append(np.mean((df.loc[fold_val_idx, target_col] - p_val) ** 2))
+            avg_brier = float(np.mean(fold_briers))
+            if avg_brier < best_hgb_brier:
+                best_hgb_brier = avg_brier
+                best_hgb_depth = depth
+
+        final_hgb = HistGradientBoostingClassifier(
+            max_depth=best_hgb_depth,
+            max_iter=50,
+            random_state=settings.random_seed,
+        )
+        final_hgb.fit(X_train, y_train)
+
+        models["hist_gradient_boosting"] = ModelBundle(
+            estimator=final_hgb,
+            calibrator=None,
+            feature_columns=features.feature_columns,
+            metadata={
+                "model_name": "hist_gradient_boosting",
+                "selected_depth": best_hgb_depth,
+                "cv_brier_score": best_hgb_brier,
+                "probability_status": "uncalibrated",
+                "fit_sessions": len(splits.train),
+            },
+        )
+
     return models
 
 
@@ -232,6 +301,11 @@ def predict_risk(bundle: ModelBundle, frame: pd.DataFrame) -> pd.Series:
     if isinstance(bundle.estimator, ConstantPredictor):
         p = np.full(len(frame), bundle.estimator.prevalence)
         return pd.Series(p, index=frame.index, name="risk_probability")
+
+    classes = getattr(bundle.estimator, "classes_", None)
+    if classes is not None and len(classes) == 1:
+        val = 1.0 if float(classes[0]) == 1.0 else 0.0
+        return pd.Series(val, index=frame.index, name="risk_probability")
 
     raw_proba = bundle.estimator.predict_proba(X)[:, 1]
     if bundle.calibrator is not None and bundle.metadata.get("probability_status") == "calibrated":

@@ -1,0 +1,24 @@
+[Unit]
+Description=AI Investment Risk Radar Scheduled Market Refresh Service
+Documentation=https://github.com/PSergio984/ai-risk-radar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ai-risk-radar
+Group=ai-risk-radar
+WorkingDirectory=/opt/ai-risk-radar
+Environment=PYTHONPATH=/opt/ai-risk-radar
+Environment=PYTHONUNBUFFERED=1
+Environment=AI_RISK_RADAR_LOG_DIR=/opt/ai-risk-radar/logs
+ExecStart=/bin/bash /opt/ai-risk-radar/scripts/run_scheduled_refresh.sh config.json refresh
+StandardOutput=journal
+StandardError=journal
+
+# Failure behavior: log failure, do not restart automatically for a daily batch job
+Restart=no
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

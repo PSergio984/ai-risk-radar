@@ -1,0 +1,182 @@
+{
+  "identity": {
+    "name": "AI Investment Risk Radar",
+    "version": "0.1.0",
+    "pipeline_mode": "research",
+    "timestamp": "2026-11-17T22:25:32.517530",
+    "release_hash": "f805f206803067139f8c52099273bf9e80ca53ec64b10aed270daabebbcfe113"
+  },
+  "data_status": {
+    "source": "yfinance",
+    "cutoff_session": "2026-11-16",
+    "as_of_session": "2024-10-18",
+    "staleness_sessions": 0,
+    "refresh_status": "ok"
+  },
+  "forecast": {
+    "as_of_session": "2024-10-18",
+    "horizon_sessions": 20,
+    "loss_threshold": -0.05,
+    "loss_definition": "Estimated probability of 50% SOXX / 50% XLK reference basket total return <= -5.0% over next 20 trading sessions",
+    "probability": 0.45915710078628186,
+    "probability_status": "calibrated",
+    "fallback_reason": "Calibration support adequate",
+    "raw_probability": 0.45915710078628186,
+    "risk_level": "High",
+    "feature_explanation": [
+      "63-session peak-to-trough drawdown in AI reference basket measured.",
+      "Realized 20-session volatility in SOXX and XLK incorporated into risk estimate.",
+      "Relative strength difference between technology sector and broad S&P 500."
+    ]
+  },
+  "allocation": {
+    "strategy_mode": "Growth",
+    "selected_threshold": 0.5,
+    "weights": {
+      "SOXX": 0.35,
+      "XLK": 0.35,
+      "SPY": 0.2,
+      "SHY": 0.1
+    },
+    "trade_required": 1,
+    "trade_description": "Risk estimate (45.9%) < threshold (50.0%); maintaining Growth exposure."
+  },
+  "performance": {
+    "evaluation_partition": "validation",
+    "selected_strategy": {
+      "total_return": 0.6952689930121523,
+      "cagr": 0.31932039104563437,
+      "max_drawdown": -0.16364131616928157,
+      "annualized_volatility": 0.2002072637693262,
+      "sharpe": 1.4794220050964575,
+      "turnover": 4.833751855532823,
+      "defensive_occupancy": 0.0498960498960499,
+      "total_cost": 108.35109122364884
+    }
+  },
+  "comparisons": {
+    "growth_buy_and_hold": {
+      "total_return": 0.6918116558896165,
+      "cagr": 0.31790712734883453,
+      "max_drawdown": -0.1773361376903472,
+      "annualized_volatility": 0.21507949026343476,
+      "sharpe": 1.3865685095195015,
+      "turnover": 0.5244755244755245,
+      "defensive_occupancy": 0.0,
+      "total_cost": 9.99000999000964
+    },
+    "fixed_defensive_weekly": {
+      "total_return": 0.45009476412751204,
+      "cagr": 0.21543881616462945,
+      "max_drawdown": -0.09790156740290722,
+      "annualized_volatility": 0.12772883556189515,
+      "sharpe": 1.5846251564771978,
+      "turnover": 1.2165638426977132,
+      "defensive_occupancy": 1.0,
+      "total_cost": 26.191938193156602
+    },
+    "momentum_63": {
+      "total_return": 0.5239049024143234,
+      "cagr": 0.24753540505524718,
+      "max_drawdown": -0.16861553068754528,
+      "annualized_volatility": 0.19009973139571149,
+      "sharpe": 1.2538293902039845,
+      "turnover": 6.203353975866996,
+      "defensive_occupancy": 0.19542619542619544,
+      "total_cost": 147.48614654893572
+    },
+    "threshold_0.20": {
+      "total_return": 0.39416756414888005,
+      "cagr": 0.1905985837373596,
+      "max_drawdown": -0.07450469596484975,
+      "annualized_volatility": 0.10564754617309871,
+      "sharpe": 1.6962726346001626,
+      "turnover": 1.54976823948703,
+      "defensive_occupancy": 0.997920997920998,
+      "total_cost": 31.352211265551887
+    },
+    "threshold_0.35": {
+      "total_return": 0.39416756414888005,
+      "cagr": 0.1905985837373596,
+      "max_drawdown": -0.07450469596484975,
+      "annualized_volatility": 0.10564754617309871,
+      "sharpe": 1.6962726346001626,
+      "turnover": 1.54976823948703,
+      "defensive_occupancy": 0.997920997920998,
+      "total_cost": 31.352211265551887
+    },
+    "threshold_0.50": {
+      "total_return": 0.6952689930121523,
+      "cagr": 0.31932039104563437,
+      "max_drawdown": -0.16364131616928157,
+      "annualized_volatility": 0.2002072637693262,
+      "sharpe": 1.4794220050964575,
+      "turnover": 4.833751855532823,
+      "defensive_occupancy": 0.0498960498960499,
+      "total_cost": 108.35109122364884
+    }
+  },
+  "diagnostics": {
+    "model_selection": {
+      "cv_brier_score": 0.11074006932349073,
+      "selected_max_depth": 3,
+      "selected_min_samples_leaf": 50
+    },
+    "validation_classification": {
+      "brier_score": 0.22297380828964178,
+      "prevalence": 0.10395010395010396,
+      "count": 481,
+      "precision_20": 0.10395010395010396,
+      "recall_20": 1.0,
+      "precision_35": 0.10395010395010396,
+      "recall_35": 1.0,
+      "precision_50": 0.0,
+      "recall_50": 0.0,
+      "reliability_bins": [
+        {
+          "bin": "0.0-0.2",
+          "count": 0,
+          "pred_mean": null,
+          "obs_mean": null
+        },
+        {
+          "bin": "0.2-0.4",
+          "count": 0,
+          "pred_mean": null,
+          "obs_mean": null
+        },
+        {
+          "bin": "0.4-0.6",
+          "count": 481,
+          "pred_mean": 0.4647153789104719,
+          "obs_mean": 0.10395010395010396
+        },
+        {
+          "bin": "0.6-0.8",
+          "count": 0,
+          "pred_mean": null,
+          "obs_mean": null
+        },
+        {
+          "bin": "0.8-1.0",
+          "count": 0,
+          "pred_mean": null,
+          "obs_mean": null
+        }
+      ],
+      "non_overlapping": {
+        "brier_score": 0.22140221172457886,
+        "prevalence": 0.04,
+        "event_count": 1,
+        "total_count": 25
+      }
+    }
+  },
+  "limitations": [
+    "Proxy limitations: SOXX and XLK represent semiconductor hardware and large-cap tech, not pure AI exposure.",
+    "Execution realism: rebalance decisions on week's last session execute at next trading session close with 10 bps transaction cost.",
+    "Holding drift: asset weights drift between rebalances as market prices change.",
+    "Zero risk-free Sharpe convention: Sharpe ratios assume 0.0% risk-free rate strictly per project specification.",
+    "Temporal overlap: 20-trading-day forecast horizons overlap, so daily observations are not statistically independent."
+  ]
+}

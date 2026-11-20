@@ -1,5 +1,6 @@
 """ETF price data acquisition, validation, and hashed snapshots."""
 
+import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -42,11 +43,36 @@ def validate_sessions_and_prices(
             raise ValueError(
                 f"Missing exchange session for {col} on {first_nan_date.strftime('%Y-%m-%d')}"
             )
+        inf_mask = ~np.isfinite(series)
+        if inf_mask.any():
+            first_inf_date = adjusted_close.index[inf_mask][0]
+            raise ValueError(
+                f"Non-finite price for {col} on {first_inf_date.strftime('%Y-%m-%d')}"
+            )
         nonpos_mask = series <= 0.0
         if nonpos_mask.any():
             first_nonpos_date = adjusted_close.index[nonpos_mask][0]
             raise ValueError(
                 f"Nonpositive price for {col} on {first_nonpos_date.strftime('%Y-%m-%d')}"
+            )
+
+    for col in volume.columns:
+        vol_series = volume[col]
+        if vol_series.isna().any():
+            first_nan = volume.index[vol_series.isna()][0]
+            raise ValueError(
+                f"Missing exchange session volume for {col} on {first_nan.strftime('%Y-%m-%d')}"
+            )
+        nonfinite_vol = ~np.isfinite(vol_series)
+        if nonfinite_vol.any():
+            first_inf = volume.index[nonfinite_vol][0]
+            raise ValueError(
+                f"Non-finite volume for {col} on {first_inf.strftime('%Y-%m-%d')}"
+            )
+        if (vol_series < 0.0).any():
+            first_neg = volume.index[vol_series < 0.0][0]
+            raise ValueError(
+                f"Negative volume for {col} on {first_neg.strftime('%Y-%m-%d')}"
             )
 
     if expected_sessions is not None:
@@ -61,6 +87,7 @@ def validate_sessions_and_prices(
 
 def save_snapshot(bundle: DataBundle, path: Path | str) -> Path:
     """Persist a DataBundle to parquet files and generate a hashed manifest."""
+    validate_sessions_and_prices(bundle.adjusted_close, bundle.volume)
     snapshot_dir = Path(path)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -139,26 +166,86 @@ def load_snapshot(path: Path | str) -> DataBundle:
 
 def resolve_last_completed_session(
     cal: xcals.ExchangeCalendar,
-    as_of: pd.Timestamp | str | None = None,
+    as_of: pd.Timestamp | str | datetime.date | None = None,
 ) -> pd.Timestamp:
     """Resolve last completed trading session on XNYS calendar for any date or timestamp."""
     if as_of is None:
-        now_ny = pd.Timestamp.now(tz="UTC").tz_convert("America/New_York")
-        today_date = pd.Timestamp(now_ny.date())
-        if cal.is_session(today_date):
-            market_close = cal.session_close(today_date).tz_convert("America/New_York")
-            if now_ny >= market_close:
-                return today_date
-            return pd.Timestamp(cal.previous_session(today_date))
-        return pd.Timestamp(cal.date_to_session(today_date, direction="previous"))
+        ts = pd.Timestamp.now(tz="UTC").tz_convert("America/New_York")
+        is_date_only = False
+    elif isinstance(as_of, str):
+        if not any(c in as_of for c in ("T", " ", ":")):
+            is_date_only = True
+            target_date = pd.Timestamp(as_of)
+        else:
+            is_date_only = False
+            ts = pd.Timestamp(as_of)
+    elif type(as_of) is datetime.date:
+        is_date_only = True
+        target_date = pd.Timestamp(as_of)
+    else:
+        is_date_only = False
+        ts = pd.Timestamp(as_of)
 
-    as_of_ts = pd.Timestamp(as_of)
-    if as_of_ts.tz is not None:
-        as_of_ts = as_of_ts.tz_convert("America/New_York").tz_localize(None)
-    as_of_date = pd.Timestamp(as_of_ts.date())
-    if cal.is_session(as_of_date):
-        return as_of_date
-    return pd.Timestamp(cal.date_to_session(as_of_date, direction="previous"))
+    if is_date_only:
+        if cal.is_session(target_date):
+            return target_date
+        return pd.Timestamp(cal.date_to_session(target_date, direction="previous"))
+
+    if ts.tz is None:
+        ts = ts.tz_localize("America/New_York")
+    else:
+        ts = ts.tz_convert("America/New_York")
+
+    session_date = pd.Timestamp(ts.date())
+    if cal.is_session(session_date):
+        market_close = cal.session_close(session_date).tz_convert("America/New_York")
+        if ts >= market_close:
+            return session_date
+        return pd.Timestamp(cal.previous_session(session_date))
+    return pd.Timestamp(cal.date_to_session(session_date, direction="previous"))
+
+
+def _download_price_data(
+    tickers_list: list[str],
+    start_dt: pd.Timestamp,
+    end_dt: pd.Timestamp,
+    max_retries: int = 3,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Download adjusted close and volume data from yfinance with retry handling."""
+    raw_df = pd.DataFrame()
+    last_err = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            raw_df = yf.download(
+                tickers=tickers_list,
+                start=start_dt.strftime("%Y-%m-%d"),
+                end=(end_dt + pd.Timedelta(days=5)).strftime("%Y-%m-%d"),
+                auto_adjust=False,
+                actions=True,
+                progress=False,
+                threads=False,
+            )
+            if not raw_df.empty:
+                break
+        except (OSError, RuntimeError, ConnectionError, ValueError, TimeoutError) as e:
+            last_err = e
+
+    if raw_df.empty:
+        raise RuntimeError(f"yfinance returned an empty dataset after {max_retries} attempts: {last_err}")
+
+    # Extract Adj Close and Volume
+    if isinstance(raw_df.columns, pd.MultiIndex):
+        adj_close = raw_df["Adj Close"][tickers_list].copy()
+        volume = raw_df["Volume"][tickers_list].copy()
+    else:
+        adj_close = pd.DataFrame({tickers_list[0]: raw_df["Adj Close"]})
+        volume = pd.DataFrame({tickers_list[0]: raw_df["Volume"]})
+
+    # Normalize index to tz-naive
+    adj_close.index = pd.to_datetime(adj_close.index).tz_localize(None).normalize()
+    volume.index = pd.to_datetime(volume.index).tz_localize(None).normalize()
+    return adj_close, volume
 
 
 def fetch_prices(
@@ -198,6 +285,7 @@ def fetch_prices(
             validate_sessions_and_prices(adj, vol, expected_sessions=expected_sessions)
             manifest = dict(existing_bundle.manifest)
             manifest["cutoff_session"] = last_completed.strftime("%Y-%m-%d")
+            manifest["full_history_refresh"] = False
             return DataBundle(adjusted_close=adj, volume=vol, sessions=expected_sessions, manifest=manifest)
 
         overlap_candidates = cal.sessions_in_range(start_dt, existing_last)
@@ -206,46 +294,33 @@ def fetch_prices(
         else:
             fetch_start_dt = start_dt
 
-    max_retries = 3
-    raw_df = pd.DataFrame()
-    last_err = None
+    adj_close, volume = _download_price_data(tickers_list, fetch_start_dt, last_completed)
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            raw_df = yf.download(
-                tickers=tickers_list,
-                start=fetch_start_dt.strftime("%Y-%m-%d"),
-                end=(last_completed + pd.Timedelta(days=5)).strftime("%Y-%m-%d"),
-                auto_adjust=False,
-                actions=True,
-                progress=False,
-                threads=False,
-            )
-            if not raw_df.empty:
-                break
-        except (OSError, RuntimeError, ConnectionError, ValueError, TimeoutError) as e:
-            last_err = e
+    overlap_coherent = True
+    if cached_adj is not None:
+        # Check overlap sessions between cached_adj and newly fetched data
+        overlap_idx = cached_adj.index.intersection(adj_close.index)
+        if len(overlap_idx) == 0:
+            overlap_coherent = False
+        else:
+            # Check price revision coherence across all tickers
+            cached_overlap_vals = cached_adj.loc[overlap_idx, tickers_list].to_numpy()
+            new_overlap_vals = adj_close.loc[overlap_idx, tickers_list].to_numpy()
+            if not np.allclose(cached_overlap_vals, new_overlap_vals, rtol=1e-5, atol=1e-5):
+                overlap_coherent = False
 
-    if raw_df.empty:
-        raise RuntimeError(f"yfinance returned an empty dataset after {max_retries} attempts: {last_err}")
-
-    # Extract Adj Close and Volume
-    if isinstance(raw_df.columns, pd.MultiIndex):
-        adj_close = raw_df["Adj Close"][tickers_list].copy()
-        volume = raw_df["Volume"][tickers_list].copy()
+    if not overlap_coherent and fetch_start_dt != start_dt:
+        # Adjustment revision detected or non-overlapping gap: download full coherent history
+        adj_close, volume = _download_price_data(tickers_list, start_dt, last_completed)
+        full_history_refresh = True
     else:
-        adj_close = pd.DataFrame({tickers_list[0]: raw_df["Adj Close"]})
-        volume = pd.DataFrame({tickers_list[0]: raw_df["Volume"]})
-
-    # Normalize index to tz-naive
-    adj_close.index = pd.to_datetime(adj_close.index).tz_localize(None).normalize()
-    volume.index = pd.to_datetime(volume.index).tz_localize(None).normalize()
+        full_history_refresh = (existing_bundle is None)
 
     # Merge with cached data if doing incremental refresh:
     # Newly fetched data takes precedence on overlapping sessions for revisions
-    if cached_adj is not None:
+    if cached_adj is not None and not full_history_refresh:
         adj_close = pd.concat([cached_adj.loc[cached_adj.index < adj_close.index[0]], adj_close])
-    if cached_vol is not None:
+    if cached_vol is not None and not full_history_refresh:
         volume = pd.concat([cached_vol.loc[cached_vol.index < volume.index[0]], volume])
 
     # Reindex to exact expected exchange sessions
@@ -262,7 +337,8 @@ def fetch_prices(
         "cutoff_session": last_completed.strftime("%Y-%m-%d"),
         "yfinance_version": getattr(yf, "__version__", "unknown"),
         "adjustment_settings": {"auto_adjust": False, "price_column": "Adj Close"},
-        "incremental": existing_bundle is not None,
+        "incremental": existing_bundle is not None and not full_history_refresh,
+        "full_history_refresh": full_history_refresh,
     }
 
     return DataBundle(

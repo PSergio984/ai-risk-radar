@@ -1,0 +1,25 @@
+# ==============================================================================
+# AI Investment Risk Radar: Crontab Configuration Template
+#
+# Market Schedule Context:
+#   NYSE regular trading hours end at 16:00 US Eastern Time (Monday through Friday).
+#   To guarantee complete end-of-day pricing bars from yfinance / exchange calendars,
+#   the refresh is scheduled at 16:30 US Eastern Time.
+#
+# In UTC:
+#   - Daylight Saving Time (EDT, UTC-4): 20:30 UTC -> 30 20 * * 1-5
+#   - Standard Time        (EST, UTC-5): 21:30 UTC -> 30 21 * * 1-5
+#
+# Setup instructions (DO NOT install automatically; operator-configured only):
+#   1. Edit PROJECT_DIR to point to your repository root.
+#   2. Inspect user crontab: crontab -e
+#   3. Add the line below (substituting your absolute path):
+#      30 21 * * 1-5 /bin/bash /path/to/ai-risk-radar/scripts/run_scheduled_refresh.sh config.json refresh
+# ==============================================================================
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=America/New_York
+
+# Monday through Friday at 16:30 US Eastern (post-market close)
+30 16 * * 1-5 cd /opt/ai-risk-radar && /bin/bash scripts/run_scheduled_refresh.sh config.json refresh >> logs/cron.log 2>&1

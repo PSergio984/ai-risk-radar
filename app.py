@@ -104,6 +104,7 @@ def load_report_data() -> tuple[Report | None, str | None]:
     final_test_path = artifacts_dir / "final_test_report.json"
     repro_test_path = artifacts_dir / "reproduction_test_report.json"
     research_path = artifacts_dir / "research_report.json"
+    fixture_path = artifacts_dir / "fixture_report.json"
 
     primary_path = None
     if latest_path.exists():
@@ -114,6 +115,8 @@ def load_report_data() -> tuple[Report | None, str | None]:
         primary_path = final_test_path
     elif research_path.exists():
         primary_path = research_path
+    elif fixture_path.exists():
+        primary_path = fixture_path
 
     if not primary_path:
         return None, None
@@ -172,6 +175,39 @@ def load_report_data() -> tuple[Report | None, str | None]:
         return None, None
 
 
+def resolve_fallback_banner(c_view: dict) -> tuple[str, str] | None:
+    """Determine whether a fallback banner should be rendered, returning (type, message) or None.
+
+    Banner types:
+    - 'error': Risk probability is unavailable or NaN.
+    - 'info': Risk probability is valid, but no adaptive policy threshold qualified.
+    """
+    prob_val = c_view.get("probability")
+    is_prob_unavailable = (
+        c_view.get("probability_status") == "unavailable"
+        or prob_val is None
+        or (isinstance(prob_val, float) and math.isnan(prob_val))
+    )
+    if is_prob_unavailable:
+        reason = c_view.get("fallback_reason") or "Model probability unavailable"
+        return (
+            "error",
+            (
+                f"⚠️ **Risk Probability Unavailable:** {reason}. "
+                "Strategy has safely fallen back to Fixed Baseline allocation."
+            ),
+        )
+    if c_view.get("allocation", {}).get("strategy_mode") == "Fixed Baseline (Fallback)":
+        return (
+            "info",
+            (
+                "ℹ️ **Adaptive Policy Fallback:** No adaptive threshold met validation criteria. "
+                "Strategy safely operates on Fixed Baseline allocation."
+            ),
+        )
+    return None
+
+
 def main() -> None:
     st.set_page_config(
         page_title="AI Investment Risk Radar",
@@ -209,17 +245,30 @@ def main() -> None:
     d_view = detailed_view(report)
 
     # Warning banners
+    is_synthetic = (
+        report.payload.get("is_synthetic")
+        or report.payload.get("data_status", {}).get("is_synthetic")
+        or report.payload.get("data_status", {}).get("source") == "deterministic_offline_fixture"
+    )
+    if is_synthetic:
+        st.warning(
+            "⚠️ **Synthetic Demonstration Data:** This report was generated from a synthetic offline "
+            "fixture. It is NOT real market data and should not be used for live trading."
+        )
+
     if c_view["is_stale"]:
         st.warning(
             f"⚠️ **Market Data Stale:** Snapshot as of `{c_view['as_of_session']}` "
             f"is {c_view['staleness_sessions']} session(s) behind market close."
         )
 
-    if c_view["probability_status"] == "unavailable":
-        st.error(
-            f"⚠️ **Risk Probability Unavailable:** {c_view['fallback_reason']}. "
-            "Strategy has safely fallen back to Fixed Baseline allocation."
-        )
+    banner = resolve_fallback_banner(c_view)
+    if banner is not None:
+        b_type, b_msg = banner
+        if b_type == "error":
+            st.error(b_msg)
+        else:
+            st.info(b_msg)
 
     # Common Compact View Content
     st.markdown("---")
@@ -329,8 +378,14 @@ def main() -> None:
 
             # Add Selected Strategy row
             if metrics:
+                sel_th = alloc.get("selected_threshold")
+                strat_label = (
+                    f"Selected Strategy (Threshold {float(sel_th):.2f})"
+                    if sel_th is not None
+                    else "Selected Strategy (Fixed Baseline Fallback)"
+                )
                 rows.append({
-                    "Strategy": f"Selected Strategy (Threshold {alloc.get('selected_threshold', 0.50):.2f})",
+                    "Strategy": strat_label,
                     "Total Return": _fmt_val_pct(metrics.get("total_return")),
                     "Return Diff (pp)": "Base",
                     "CAGR": _fmt_val_pct(metrics.get("cagr")),

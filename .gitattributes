@@ -1,0 +1,2 @@
+# Preserve exact CRLF line endings for frozen evaluation JSON reports across all checkouts
+artifacts/*.json text eol=crlf

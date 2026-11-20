@@ -1,0 +1,60 @@
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-risk-radar:latest
+    container_name: ai-risk-radar-dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORT=8501
+    volumes:
+      - ./data:/app/data
+      - ./artifacts:/app/artifacts
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  refresh:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-risk-radar:latest
+    container_name: ai-risk-radar-refresh
+    volumes:
+      - ./data:/app/data
+      - ./artifacts:/app/artifacts
+      - ./logs:/app/logs
+    command: ["latest", "--data-mode", "refresh", "--config", "config.json"]
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-risk-radar:latest
+    container_name: ai-risk-radar-test
+    volumes:
+      - ./tests:/app/tests:ro
+    command: ["test"]
+
+  fixture-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-risk-radar:latest
+    container_name: ai-risk-radar-fixture-dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORT=8501
+      - AI_RISK_RADAR_NOTEBOOK_MODE=fixture
+    volumes:
+      - ./logs:/app/logs
+    command: ["fixture-dashboard"]
